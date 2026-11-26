@@ -9,7 +9,7 @@ Status is one of: pass, partial, fail, not tested.
 | Check | Status | One-line result |
 |---|---|---|
 | A2 Thunderbolt networking | not tested | |
-| A3 5K panel | not tested | |
+| A3 5K panel | partial | Usable full-screen 3840×2160 picture with the stock driver. Native 5120×2880 not attempted yet. |
 | A4 Video decode | not tested | |
 | A5 Sound | partial | Speakers work (stock driver). Microphone gives a live signal. Jack and voice recording assumed working, not tested. |
 
@@ -38,11 +38,11 @@ Status is one of: pass, partial, fail, not tested.
 
 ## A3. 5K panel
 
-- Console resolution with the stock driver:
-- Connectors and modes:
-- What the picture looks like:
+- Console resolution with the stock driver: **3840×2160** at 60 Hz. `/sys/class/drm/card1-eDP-1/modes` lists 3840x2160, 3200x1800, 2560x1440, 1920x1200, 1920x1080, 1600x1200 and so on (no 5120x2880); `fb0` is 3840,2160.
+- Connectors and modes: `card1-eDP-1` connected (the panel). `DP-1`, `DP-2`, `DP-3` disconnected. eDP link (`/sys/kernel/debug/dri/1/eDP-1/link_settings`): 4 lanes, rate 0x14 (HBR2, 5.4 Gbit/s per lane), one link only, so only one of the panel's two tile inputs is driven.
+- What the picture looks like: test pattern `/root/build/pattern.png` (script `linux/bench/make-pattern.sh`) shown full screen with `mpv --vo=drm`. The user said it "looks good": fills the screen, correct shape. Not checked separately: sharpness of the 1-pixel stripes. 3840 on a 5120-pixel panel is a 4:3 scale, so the panel (or GPU) is scaling and 1-pixel detail cannot be pixel-exact.
 - Native 5120×2880 (patch tried, kernel version, result):
-- Backlight control:
+- Backlight control: `/sys/class/backlight/acpi_video0` (max 79, was at 79). amdgpu: `Skipping amdgpu DM backlight registration`. Whether `acpi_video0` actually dims this panel is not tested yet.
 
 ## A4. Video decode
 
