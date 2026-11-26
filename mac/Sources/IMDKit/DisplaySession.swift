@@ -17,8 +17,10 @@ public final class DisplaySession {
         /// Upper limit; the actual rate follows the picture size (about 10 Mbit/s at 1920×1080, 40 at 3840×2160).
         public var maxBitrate = 40_000_000
         public var fps = 60
-        /// Switch the Mac's sound output to "iMac Speakers" while connected.
-        public var selectSpeakers = true
+        /// Add the extra display and send its picture.
+        public var useDisplay = true
+        /// Send this Mac's sound: "iMac Speakers" appears and becomes the Mac's sound output while connected.
+        public var useSound = true
         public init(host: String, macName: String) { self.host = host; self.macName = macName }
     }
 
@@ -86,28 +88,37 @@ public final class DisplaySession {
         s.onEnd = { [weak self] reason in self?.finish(reason) }
         s.start()   // from here on the once-a-second PING keeps the session alive
 
-        guard let vd = VirtualDisplay(name: "iMac Display", modes: VirtualDisplay.imacModes, hiDPI: true) else {
-            throw CaptureError("macOS refused to create the extra display")
+        if c.useDisplay {
+            guard let vd = VirtualDisplay(name: "iMac Display", modes: VirtualDisplay.imacModes, hiDPI: true) else {
+                throw CaptureError("macOS refused to create the extra display")
+            }
+            display = vd
+            for _ in 0..<40 where vd.currentPixelSize == nil { try await Task.sleep(nanoseconds: 50_000_000) }
         }
-        display = vd
-        for _ in 0..<40 where vd.currentPixelSize == nil { try await Task.sleep(nanoseconds: 50_000_000) }
 
         // Sound. With our driver installed, only what is played into "iMac Speakers"; otherwise everything.
-        if audio["out"] as? Bool == true {
+        if c.useSound, audio["out"] as? Bool == true {
             if let dev = SpeakerDevice(), SpeakerDevice.microphonePermission == .authorized {
                 dev.onAudio = { [weak self] in self?.pcm($0) }
-                dev.selectWhileRunning = c.selectSpeakers
                 dev.log = { [weak self] in self?.log("sound: \($0)") }
                 dev.onVolume = { [weak s] level, mute in try? s?.ctrl.sendJSON(.audioVolume, ["volume": Double(level), "mute": mute]) }
                 speakers = dev
                 soundSource = .speakersDevice
-            } else {
-                screenAudio = true
+            } else if c.useDisplay {
+                screenAudio = true            // comes with the screen capture, so only together with the display
                 soundSource = .everything
+            } else {
+                log("sound: not sent. Without the display, sound needs the “iMac Speakers” device and its permission.")
             }
         }
 
-        try await startStream()
+        if c.useDisplay {
+            try await startStream()
+        } else {
+            // Sound, keyboard, mouse and drives only. The receiver still wants a video size in CONFIG
+            // (it starts its sound player on CONFIG); no picture is sent.
+            try await configure(width: 1280, height: 720)
+        }
         try speakers?.start()   // after the first CONFIG: the iMac starts its player on CONFIG
 
         // The user changed the resolution in Display settings (or rearranged displays): follow.
@@ -135,21 +146,7 @@ public final class DisplaySession {
         streamWidth = w; streamHeight = h
         if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
 
-        setAck(nil)
-        try s.sendConfig([
-            "video": ["codec": "h264", "fps": c.fps, "w": w, "h": h, "scale": "fit",
-                      "tiles": [["id": 0, "x": 0, "y": 0, "w": w, "h": h]]] as [String: Any],
-            "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
-            "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
-        ])
-        var answer: (ok: Bool, error: String)?
-        for _ in 0..<150 {   // 3 s
-            answer = currentAck
-            if answer != nil || isFinished { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        guard let answer else { throw CaptureError("the iMac did not answer CONFIG") }
-        guard answer.ok else { throw CaptureError("the iMac refused \(w)x\(h): \(answer.error)") }
+        try await configure(width: w, height: h)
         if s.video == nil { try await Task.detached { try s.openVideo() }.value }
 
         var enc = H264Encoder.Config(width: w, height: h, fps: c.fps, bitrate: min(c.maxBitrate, max(6_000_000, Int(Double(w * h) * 4.8))))
@@ -188,6 +185,26 @@ public final class DisplaySession {
             }
         }
         throw lastError
+    }
+
+    /// Sends CONFIG and waits for the iMac's answer.
+    @MainActor private func configure(width w: Int, height h: Int) async throws {
+        guard let s = session else { throw CaptureError("no session") }
+        setAck(nil)
+        try s.sendConfig([
+            "video": ["codec": "h264", "fps": config.fps, "w": w, "h": h, "scale": "fit",
+                      "tiles": [["id": 0, "x": 0, "y": 0, "w": w, "h": h]]] as [String: Any],
+            "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
+            "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
+        ])
+        var answer: (ok: Bool, error: String)?
+        for _ in 0..<150 {   // 3 s
+            answer = currentAck
+            if answer != nil || isFinished { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard let answer else { throw CaptureError("the iMac did not answer CONFIG") }
+        guard answer.ok else { throw CaptureError("the iMac refused \(w)x\(h): \(answer.error)") }
     }
 
     @MainActor private func displayChanged() async {

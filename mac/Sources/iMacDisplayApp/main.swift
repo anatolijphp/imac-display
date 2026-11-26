@@ -24,8 +24,9 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     private var timer: Timer?
 
     // Settings
-    private var enabled: Bool { get { defaults.object(forKey: "enabled") as? Bool ?? true } set { defaults.set(newValue, forKey: "enabled") } }
-    private var switchSound: Bool { get { defaults.object(forKey: "switchSound") as? Bool ?? true } set { defaults.set(newValue, forKey: "switchSound") } }
+    private var useDisplay: Bool { get { defaults.object(forKey: "useDisplay") as? Bool ?? true } set { defaults.set(newValue, forKey: "useDisplay") } }
+    private var useSound: Bool { get { defaults.object(forKey: "useSound") as? Bool ?? true } set { defaults.set(newValue, forKey: "useSound") } }
+    private var enabled: Bool { useDisplay || useSound }
     private var testingOverWiFi: Bool { get { defaults.bool(forKey: "testingOverWiFi") } set { defaults.set(newValue, forKey: "testingOverWiFi") } }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -115,14 +116,15 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
 
     private func tick() {
         guard enabled, session == nil, !connecting, !installingDriver else { return }
-        guard DisplayCapture.hasPermission else { return }   // nothing to send without it; the menu says so
+        guard !useDisplay || DisplayCapture.hasPermission else { return }   // no picture without it; the menu says so
         guard let host = testingOverWiFi ? testingHostName : foundAddress else { return }
         connect(to: host)
     }
 
     private func connect(to host: String) {
         var c = DisplaySession.Config(host: host, macName: Host.current().localizedName ?? "Mac")
-        c.selectSpeakers = switchSound
+        c.useDisplay = useDisplay
+        c.useSound = useSound
         c.maxBitrate = testingOverWiFi ? 20_000_000 : 40_000_000   // Wi-Fi here carries about 65 Mbit/s
         let s = DisplaySession(c)
         s.log = { [weak self] line in Task { @MainActor in self?.log(line) } }
@@ -176,15 +178,17 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
 
         if connected, let s = session {
             info("Connected to the iMac" + (testingOverWiFi ? " over Wi-Fi (testing)" : ""))
-            info("\(s.desktopWidth) × \(s.desktopHeight), \(stats.decoded) pictures per second shown")
-            switch session?.soundSource {
-            case .speakersDevice?: info("Sound: whatever plays on “iMac Speakers”")
-            case .everything?: info("Sound: everything this Mac plays")
-            default: info("Sound: the iMac cannot play sound")
+            if useDisplay { info("Display: \(s.desktopWidth) × \(s.desktopHeight), \(stats.decoded) pictures per second") }
+            if useSound {
+                switch s.soundSource {
+                case .speakersDevice: info("Sound: on “iMac Speakers”")
+                case .everything: info("Sound: everything this Mac plays")
+                case .none: info("Sound: not available")
+                }
             }
         } else if !enabled {
             info("Off")
-        } else if !DisplayCapture.hasPermission {
+        } else if useDisplay && !DisplayCapture.hasPermission {
             info("Waiting for the Screen Recording permission")
         } else if connecting {
             info("Connecting to the iMac…")
@@ -196,22 +200,19 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         if !connected, let p = lastProblem { info("Last problem: \(p.prefix(90))") }
         menu.addItem(.separator())
 
-        _ = item("Use the iMac as a display", #selector(toggleEnabled), checked: enabled)
-        _ = item("Display Settings…", #selector(openDisplaySettings))
-        _ = item("Play this Mac’s sound on the iMac when connected", #selector(toggleSwitchSound), checked: switchSound)
+        _ = item("Use Display", #selector(toggleDisplay), checked: useDisplay)
+        _ = item("Use Sound", #selector(toggleSound), checked: useSound)
         menu.addItem(.separator())
 
         switch driverState {
-        case .missing: _ = item("Install the “iMac Speakers” sound device…", #selector(installDriver))
-        case .outdated: _ = item("Update the “iMac Speakers” sound device…", #selector(installDriver))
+        case .missing: _ = item("Install the “iMac Speakers” sound device…", #selector(installDriver)); menu.addItem(.separator())
+        case .outdated: _ = item("Update the “iMac Speakers” sound device…", #selector(installDriver)); menu.addItem(.separator())
         case .current: break
         }
-        menu.addItem(.separator())
 
         _ = item("Open at Login", #selector(toggleLogin), checked: SMAppService.mainApp.status == .enabled)
         _ = item("Testing: connect over Wi-Fi", #selector(toggleTesting), checked: testingOverWiFi)
         _ = item("Show Log", #selector(showLog))
-        if driverState != .missing { _ = item("Remove the “iMac Speakers” sound device…", #selector(removeDriver)) }
         menu.addItem(.separator())
         _ = item("Quit iMac Display", #selector(quit))
     }
@@ -225,17 +226,16 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         statusItem.button?.appearsDisabled = !connected
     }
 
-    @objc private func toggleEnabled() {
-        enabled.toggle()
-        if !enabled { reconnect("switched off") }
+    @objc private func toggleDisplay() {
+        useDisplay.toggle()
+        reconnect(useDisplay ? "display switched on" : "display switched off")
+        if useDisplay { Task { await checkPermissions() } }
         updateIcon()
     }
-    @objc private func openDisplaySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") { NSWorkspace.shared.open(url) }
-    }
-    @objc private func toggleSwitchSound() {
-        switchSound.toggle()
-        if connected { reconnect("sound setting changed") }
+    @objc private func toggleSound() {
+        useSound.toggle()
+        reconnect(useSound ? "sound switched on" : "sound switched off")
+        updateIcon()
     }
     @objc private func toggleTesting() {
         testingOverWiFi.toggle()
@@ -290,14 +290,6 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
                 if SpeakerDevice.microphonePermission != .authorized { _ = await SpeakerDevice.requestMicrophonePermission() }
                 self.reconnect("sound device installed")
             }
-        }
-    }
-
-    @objc private func removeDriver() {
-        let cmd = "rm -rf '\(driverInstallPath)'; launchctl kickstart -k system/com.apple.audio.coreaudiod || killall coreaudiod"
-        runAsAdministrator(cmd, prompt: "iMac Display wants to remove its sound device, iMac Speakers.") { [weak self] ok, message in
-            if ok { self?.log("sound device removed"); self?.reconnect("sound device removed") }
-            else if !message.contains("-128") { self?.alert("The sound device was not removed", message) }
         }
     }
 

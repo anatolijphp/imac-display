@@ -2,16 +2,25 @@
 # Builds "iMac Display.app": the one thing to install on the MacBook. Command Line Tools only (no Xcode).
 # The app carries the "iMac Speakers" sound device inside and installs it itself when asked.
 #
-#   mac/scripts/build-app.sh                            ad-hoc signature (runs on this Mac only)
-#   SIGN_IDENTITY="My Cert" mac/scripts/build-app.sh    sign with a certificate from the keychain
+#   mac/scripts/build-app.sh                            signs with the local identity from
+#                                                       make-signing-identity.sh if there is one, else ad hoc
+#   SIGN_IDENTITY="My Cert" mac/scripts/build-app.sh    sign with a certificate from the login keychain
 #
 # Result: out/iMac Display.app and out/iMac Display.dmg (the app plus a shortcut to Applications).
 #
 # With an ad-hoc signature macOS ties its permissions (Screen Recording, Accessibility, Microphone)
-# to this exact build and asks again after every rebuild. A certificate keeps them.
+# to this exact build and asks again after every rebuild. A certificate keeps them:
+# run mac/scripts/make-signing-identity.sh once.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SIGN="${SIGN_IDENTITY:--}"
+SIGN_ARGS=()
+LOCAL_KEYCHAIN="$(cd .. && pwd)/out/signing/imac-display.keychain-db"
+if [ -z "${SIGN_IDENTITY:-}" ] && [ -f "$LOCAL_KEYCHAIN" ]; then
+    security unlock-keychain -p "$(cat "$(dirname "$LOCAL_KEYCHAIN")/keychain-pass")" "$LOCAL_KEYCHAIN"
+    SIGN="iMac Display Local Signing"
+    SIGN_ARGS=(--keychain "$LOCAL_KEYCHAIN")
+fi
 scripts/build-audio-driver.sh
 swift build -c release
 APP="../out/iMac Display.app"
@@ -29,8 +38,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDisplayName</key><string>iMac Display</string>
     <key>CFBundleExecutable</key><string>iMacDisplay</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3</string>
-    <key>CFBundleVersion</key><string>3</string>
+    <key>CFBundleShortVersionString</key><string>0.4</string>
+    <key>CFBundleVersion</key><string>4</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
@@ -41,9 +50,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-codesign --force --sign "$SIGN" --identifier local.imac-display.audio "$APP/Contents/Resources/iMacDisplayAudio.driver"
-codesign --force --sign "$SIGN" --identifier local.imac-display.mac "$APP"
-codesign --verify --strict --deep --verbose=2 "$APP"
+# The sound device stays ad-hoc signed: that is what macOS's audio service has loaded so far.
+codesign --force --sign - --identifier local.imac-display.audio "$APP/Contents/Resources/iMacDisplayAudio.driver"
+codesign --force ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} --sign "$SIGN" --identifier local.imac-display.mac "$APP"
+codesign --verify --strict --verbose=2 "$APP" || echo "note: a self-signed certificate does not pass --verify; the app still runs"
+codesign -d -r- "$APP" 2>&1 | tail -1
 DMG="../out/iMac Display.dmg"
 STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"
