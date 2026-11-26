@@ -1,6 +1,6 @@
 // imacdisplayd: the iMac side of PROTOCOL.md.
 // Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding, USB drives over SMB.
-// Waiting screen on the bare panel, video (CPU decode per tile, GPU display). Not yet: sound.
+// Waiting screen on the bare panel, video (CPU decode per tile, GPU display), sound (ALSA).
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -15,11 +15,14 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
+#include "audio.h"
 #include "display.h"
 #include "input.h"
 #include "storage.h"
@@ -40,7 +43,7 @@ json imac_hello() {
           {"role", "imac"},
           {"panel", {{"w", 5120}, {"h", 2880}, {"hz", 60}}},
           {"decode", {{"codecs", {"h264"}}, {"max_w", 3840}, {"max_h", 2160}, {"max_tiles", 4}, {"hw", false}}},
-          {"audio", {{"out", false}, {"in", false}}},
+          {"audio", {{"out", true}, {"in", true}}},
           {"features", {"input", "storage"}}};
 }
 
@@ -65,6 +68,7 @@ class Daemon {
     timerfd_settime(timer_, 0, &its, nullptr);
     kf_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     kf_timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    mic_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
     timerfd_settime(anim_, 0, &ats, nullptr);
@@ -88,6 +92,7 @@ class Daemon {
       add(storage_.udev_fd(), POLLIN, 7);
       add(kf_efd_, POLLIN, 9);
       add(kf_timer_, POLLIN, 10);
+      add(mic_efd_, POLLIN, 11);
       for (int fd : input_.fds()) add(fd, POLLIN, 6);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
@@ -109,6 +114,7 @@ class Daemon {
           case 7: storage_.on_udev(); break;
           case 8: { uint64_t n; (void)!read(anim_, &n, sizeof n); display_.animate(); break; }
           case 9: { uint64_t n; (void)!read(kf_efd_, &n, sizeof n); send_keyframe_request(); break; }
+          case 11: { uint64_t n; (void)!read(mic_efd_, &n, sizeof n); send_mic(); break; }
           case 10: { uint64_t n; (void)!read(kf_timer_, &n, sizeof n); if (kf_pending_) send_keyframe_request(); break; }
         }
       }
@@ -208,6 +214,14 @@ class Daemon {
         case proto::PING: ctrl_->send(proto::PONG, p, h.length); break;
         case proto::PONG: break;
         case proto::CONFIG: handle_config(json::parse(p, p + h.length, nullptr, false)); break;
+        case proto::AUDIO_OUT:
+          if (audio_) audio_->play(p, h.length);
+          break;
+        case proto::AUDIO_VOLUME: {
+          json j = json::parse(p, p + h.length, nullptr, false);
+          if (j.is_object()) Audio::set_volume(j.value("volume", 1.0), j.value("mute", false));
+          break;
+        }
         case proto::STORAGE_EJECT: {
           json j = json::parse(p, p + h.length, nullptr, false);
           if (j.is_object()) storage_.eject(j.value("id", ""));
@@ -246,6 +260,7 @@ class Daemon {
       fprintf(stderr, "session: CONFIG accepted: %s\n", c["video"].dump().c_str());
       ctrl_->send_json(proto::CONFIG_ACK, R"({"ok":true})");
       start_video(c["video"]);
+      start_audio(c);
     } else {
       fprintf(stderr, "session: CONFIG rejected: %s\n", err.c_str());
       ctrl_->send_json(proto::CONFIG_ACK, json{{"ok", false}, {"error", err}}.dump());
@@ -281,6 +296,42 @@ class Daemon {
         target, cfg,
         [this] { uint64_t one = 1; (void)!write(kf_efd_, &one, sizeof one); },
         [this] { display_.resume(); });
+  }
+
+  // Sound: playback per CONFIG.audio_out, microphone per CONFIG.audio_in. s16le is the only format.
+  void start_audio(const json& c) {
+    audio_.reset();
+    AudioFormat out, in;
+    json ao = c.value("audio_out", json::object()), ai = c.value("audio_in", json::object());
+    out.rate = ao.value("rate", 48000);
+    out.channels = ao.value("ch", 2);
+    in.rate = ai.value("rate", 48000);
+    in.channels = ai.value("ch", 1);
+    bool in_on = ai.value("enabled", false);
+    if (ao.value("fmt", "s16le") != "s16le" || (in_on && ai.value("fmt", "s16le") != "s16le")) {
+      fprintf(stderr, "audio: only s16le is supported, sound off\n");
+      return;
+    }
+    audio_ = std::make_unique<Audio>(out, in_on, in, [this](std::vector<uint8_t> pcm) {
+      {
+        std::lock_guard<std::mutex> l(mic_mu_);
+        if (mic_q_.size() < 20) mic_q_.push_back(std::move(pcm));  // 200 ms at most if ctrl is stuck
+      }
+      uint64_t one = 1;
+      (void)!write(mic_efd_, &one, sizeof one);
+    });
+    fprintf(stderr, "audio: playing %d Hz %d ch%s\n", out.rate, out.channels,
+            in_on ? (", microphone " + std::to_string(in.rate) + " Hz " + std::to_string(in.channels) + " ch").c_str() : "");
+  }
+
+  void send_mic() {
+    std::deque<std::vector<uint8_t>> q;
+    {
+      std::lock_guard<std::mutex> l(mic_mu_);
+      q.swap(mic_q_);
+    }
+    if (!ctrl_ || !audio_) return;
+    for (auto& pcm : q) ctrl_->send(proto::AUDIO_IN, pcm.data(), pcm.size());
   }
 
   void stop_video() {
@@ -399,6 +450,11 @@ class Daemon {
       snprintf(buf, sizeof buf, R"({"decoded":%u,"dropped":%u,"decode_ms":%.1f,"present_ms":%.1f})", s.decoded,
                s.dropped, s.decode_ms, s.present_ms);
       ctrl_->send_json(proto::VIDEO_STATS, buf);
+      if (audio_ && stats_log_ % 5 == 4) {
+        AudioStats a = audio_->take_stats();
+        fprintf(stderr, "audio: %u packets, buffer %.1f ms, %u underruns, %u trimmed, %u mic packets sent\n",
+                a.received, a.buffer_ms, a.underruns, a.trimmed, a.mic_sent);
+      }
       if (++stats_log_ % 5 == 0 || s.dropped)
         fprintf(stderr,
                 "video: %u decoded, %u shown, %u dropped, receive-to-screen %.1f ms (per tile: decode %.1f, "
@@ -417,6 +473,7 @@ class Daemon {
     if (!ctrl_) return;
     if (reason) bye(*ctrl_, reason);
     stop_video();
+    audio_.reset();
     ctrl_.reset();
     video_.reset();
     session_.clear();
@@ -447,6 +504,10 @@ class Daemon {
   json config_;
   bool warned_[256] = {};
   std::unique_ptr<Video> video_dec_;
+  std::unique_ptr<Audio> audio_;
+  std::mutex mic_mu_;
+  std::deque<std::vector<uint8_t>> mic_q_;
+  int mic_efd_ = -1;
   int kf_efd_ = -1, kf_timer_ = -1;
   bool kf_pending_ = false;
   bool cpu_perf_on_ = false;

@@ -15,6 +15,7 @@ pkg_check_modules(DRM REQUIRED IMPORTED_TARGET libdrm)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 pkg_check_modules(GL REQUIRED IMPORTED_TARGET egl gbm glesv2)
 pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavutil)
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 find_package(Threads REQUIRED)
 find_package(nlohmann_json 3 REQUIRED)
 
@@ -26,7 +27,8 @@ add_executable(imacdisplayd
   src/storage.cpp
   src/display.cpp
   src/video.cpp
+  src/audio.cpp
 )
-target_link_libraries(imacdisplayd PRIVATE PkgConfig::EVDEV PkgConfig::UDEV PkgConfig::DRM PkgConfig::CAIRO PkgConfig::GL PkgConfig::AV Threads::Threads nlohmann_json::nlohmann_json)
+target_link_libraries(imacdisplayd PRIVATE PkgConfig::EVDEV PkgConfig::UDEV PkgConfig::DRM PkgConfig::CAIRO PkgConfig::GL PkgConfig::AV PkgConfig::ALSA Threads::Threads nlohmann_json::nlohmann_json)
 
 install(TARGETS imacdisplayd RUNTIME DESTINATION bin)
