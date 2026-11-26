@@ -21,7 +21,7 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 | | iMac | MacBook |
 |---|---|---|
-| Model | iMac17,1, Intel Skylake, Radeon R9 M380 / M390 / M395 / M395X (which one: see `docs/hardware-validation.md`) | MacBook Pro (Mac17,2), Apple M5, macOS 27.2 |
+| Model | iMac17,1, Intel Skylake, Radeon R9 M380 (details: `docs/hardware-validation.md`) | MacBook Pro (Mac17,2), Apple M5, macOS 27.2 |
 | Thunderbolt | 2 × Thunderbolt 2 (Falcon Ridge) | 3 × Thunderbolt/USB4 |
 | Panel | 5120×2880, driven internally as two DisplayPort tiles | |
 

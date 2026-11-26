@@ -27,6 +27,11 @@ usbmuxd
 libimobiledevice
 avahi
 nss-mdns
+# Receiver (imacdisplayd): input, JSON (build time), drive sharing
+libevdev
+nlohmann-json
+samba
+
 # Comfort
 tmux
 rsync

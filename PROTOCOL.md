@@ -8,6 +8,7 @@ The wire format between the MacBook app and `imacdisplayd` on the iMac. Draft un
 - The iMac listens on TCP port **7500**, bound to the Thunderbolt interface only.
 - The iMac advertises DNS-SD service `_imacdisplay._tcp` on that interface. TXT records: `proto=0`, `model=iMac17,1`, `panel=5120x2880`.
 - The MacBook browses for the service on `bridge0` and connects when it appears. There is no authentication in version 0: the link is a point-to-point cable.
+- **Testing only:** `imacdisplayd --iface wlan0` listens on Wi-Fi, and the Mac side can be told to connect to a named host (`imd … --host imac-display.local`; the app gets the same as a hidden debug setting). Thunderbolt stays the only link of the product.
 
 ## Connections
 
@@ -57,11 +58,11 @@ The `video` connection sends the same `session` with `"channel":"video"`.
 ```json
 {"proto":0,"role":"imac",
  "panel":{"w":5120,"h":2880,"hz":60},
- "decode":{"codecs":["h264"],"max_w":3840,"max_h":2160,"max_tiles":4,"hw":true},
+ "decode":{"codecs":["h264"],"max_w":3840,"max_h":2160,"max_tiles":4,"hw":false},
  "audio":{"out":true,"in":true},
  "features":["input","storage","brightness"]}
 ```
-`decode` states what the iMac measured it can decode at 60 fps. The MacBook never asks for more.
+`decode` states what the iMac measured it can decode at 60 fps. The MacBook never asks for more. `max_w`×`max_h` is the largest single stream (one tile); `hw` says whether the GPU decodes (on this iMac it does not, see `docs/hardware-validation.md`). `features` and `audio` list only what the receiver has implemented; the MacBook does not use anything that is missing.
 
 `CONFIG`:
 ```json
@@ -83,9 +84,11 @@ A protocol mismatch is answered with `BYE` and a closed connection.
 | 0x11 | `VIDEO_REQUEST_KEYFRAME` | ctrl, iMac → MacBook | empty |
 | 0x12 | `VIDEO_STATS` | ctrl, iMac → MacBook, once per second | JSON |
 
-`VIDEO_FRAME` flags: bit 0 = keyframe (IDR, with SPS and PPS in the payload); bit 1 = last tile of this picture. All tiles of one picture carry the same `pts_us`. The iMac shows a picture at the next screen refresh after its last tile is decoded; it does not buffer pictures.
+`VIDEO_FRAME` flags: bit 0 = keyframe (IDR, with SPS and PPS in the payload); bit 1 = last tile sent for this picture. All tiles of one picture carry the same `pts_us` and are sent in ascending tile order. The iMac shows a picture at the next screen refresh after its last tile is decoded; it does not buffer pictures.
 
-Streams have no B-frames and one reference frame. The iMac sends `VIDEO_REQUEST_KEYFRAME` after a decode error.
+**A picture may leave tiles out.** A tile whose part of the screen did not change is not sent; the iMac keeps showing that tile's last decoded picture. The frame with bit 1 set is the last one sent for that `pts_us`, whichever tile it is. Each tile is its own H.264 stream, so a tile that was left out simply continues from its previous frame. With a single tile this changes nothing. (Reason: the MacBook's encoder cannot encode all of 5120×2880 sixty times a second, see `docs/mac-spikes.md`.)
+
+Streams are H.264 High profile, 4:2:0, 8 bit, BT.709 video range, with no B-frames. The encoder sends a keyframe only at the start, after a `CONFIG`, and when asked: there are no periodic keyframes. After a `VIDEO_REQUEST_KEYFRAME` the next picture has a keyframe for every tile. The iMac sends `VIDEO_REQUEST_KEYFRAME` after a decode error.
 
 `VIDEO_STATS`: `{"decoded":60,"dropped":0,"decode_ms":4.1,"present_ms":9.8}` (per-second counts and averages).
 
@@ -107,7 +110,12 @@ Audio is uncompressed. The receiver keeps a jitter buffer of 20 to 40 ms.
 | 0x31 | `INPUT_POINTER_REL` | `i32 dx`, `i32 dy` (raw device counts, no acceleration), `i32 wheel_v`, `i32 wheel_h` (120 per notch) |
 | 0x32 | `INPUT_BUTTON` | `u8 button` (1 left, 2 right, 3 middle, 4, 5), `u8 down`, 2 pad |
 
-The MacBook applies its own pointer acceleration and key repeat.
+The MacBook applies its own pointer acceleration and key repeat. Key autorepeat is not sent.
+
+- Wheel: positive `wheel_v` = wheel turned away from the user (content scrolls up), positive `wheel_h` = right. 120 per notch; high-resolution wheels send smaller steps in the same units.
+- Modifier keys are ordinary page 0x07 usages (0xE0–0xE7). A PC keyboard's Windows key is 0xE3/0xE7 (GUI), which the MacBook treats as Command.
+- Page 0x0C carries volume up/down, mute, play/pause, next/previous track, brightness up/down and eject.
+- `INPUT_*` messages can arrive at any time after `CONFIG_ACK`.
 
 ### Storage (ctrl, JSON)
 
@@ -122,7 +130,13 @@ The MacBook applies its own pointer acceleration and key repeat.
 {"id":"7a0e…","label":"KINGSTON","fs":"exfat","size":31914983424,"read_only":false,
  "share":"usb-7a0e","user":"imac","password":"per-session-random"}
 ```
-The MacBook mounts `smb://<iMac link address>/<share>` with those credentials. The password is generated per session and only travels over the cable.
+The MacBook mounts `smb://imac@<iMac link address>/<share>` (SMB3, port 445, reachable on the session's interface only) with those credentials. The password is generated per session and only travels over the cable.
+
+- One message per **partition**: a drive with several partitions gives several volumes.
+- `size` is the size of the filesystem in bytes.
+- The iMac announces drives that are already plugged in right after its `HELLO`, so `STORAGE_ATTACHED` can arrive **before** `CONFIG_ACK`. The MacBook accepts storage messages at any point after the iMac's `HELLO`.
+- After `STORAGE_EJECT` the iMac unmounts, powers the drive off and answers `STORAGE_DETACHED`. The drive has to be replugged to appear again.
+- The iMac's own macOS data volume is offered the same way with `"id":"imac-macos"`, `"fs":"apfs"`, `"read_only":true`; `size` is the size of its APFS container. `STORAGE_EJECT` on it is answered with `STORAGE_DETACHED` and it is offered again in the next session.
 
 ### Display control (ctrl, MacBook → iMac, JSON)
 
