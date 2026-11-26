@@ -41,9 +41,12 @@ No internet is needed for the install.
 ## 3. First start of Linux
 
 1. Switch the iMac on while holding **Option** and choose **EFI Boot**.
-2. Connect Wi-Fi: `iwctl station wlan0 connect "NETWORK NAME"`.
-3. On the MacBook: `ssh root@imac-display.local`. Working over SSH makes copy and paste easy.
-4. Start Claude: `cd /root/imac-display && claude`. Log in with the link it shows, then tell it: `follow docs/IMAC-BUILD.md`.
+2. The iMac shows **"Waiting for your Mac"**. That is the finished system: nothing else needs installing.
+3. On the MacBook, start **iMac Display** and connect the Thunderbolt cable.
+
+For a text console on the iMac (to join Wi-Fi with `iwctl station wlan0 connect "NETWORK NAME"`, or to look at logs): after choosing **EFI Boot**, a menu appears for 3 seconds; choose **"console only (receiver off)"**. With an SSH key built into the installer (`PUBKEY`, see `linux/iso/build.sh`), `ssh root@imac-display.local` also works once Wi-Fi is joined.
+
+Developing on the iMac with Claude Code: build the installer with `WITH_CLAUDE=1`, then `cd /root/imac-display && claude` and `follow docs/IMAC-BUILD.md`.
 
 ## Going back
 

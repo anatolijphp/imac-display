@@ -219,19 +219,40 @@ PermitRootLogin prohibit-password
 EOF
 rm -f "$T/etc/ssh/sshd_config.d/10-archiso.conf"
 
-cat > "$T/etc/motd" <<'EOF'
+# --- the receiver: what makes this iMac a display -----------------------------------------
+# The stick carries the finished program and its configuration; here they are switched on.
+OVERLAY=/usr/share/imac-display/rootfs
+RECEIVER=0
+if [ -x "$T/usr/local/bin/imacdisplayd" ] && [ -d "$OVERLAY" ]; then
+  # Everything except the boot menu entries: those are written below for this install's own disk.
+  rsync -a --exclude='/boot/' "$OVERLAY"/ "$T"/
+  systemd-sysusers --root="$T" >/dev/null 2>&1 || say "WARNING: the drive-sharing user was not created (systemd-sysusers)"
+  systemctl --root="$T" enable imacdisplayd.service >/dev/null
+  RECEIVER=1
+  say "receiver installed: the iMac will start straight into \"Waiting for your Mac\""
+else
+  say "WARNING: no receiver on this stick; the iMac will start to a plain console"
+fi
 
-  iMac Display  (Arch Linux on the iMac's internal drive)
-  Project: /root/imac-display
-
-  Wi-Fi             iwctl station wlan0 connect "NETWORK NAME"
-  From the MacBook  ssh root@imac-display.local
-  Claude            cd /root/imac-display && claude
-                    then tell it: follow docs/IMAC-BUILD.md
-
-  Back to macOS: restart and hold the Option key.
-
-EOF
+{
+  echo
+  echo "  iMac Display  (Arch Linux on the iMac's internal drive)"
+  echo
+  if [ "$RECEIVER" = 1 ]; then
+    echo "  The iMac normally starts straight into the receiver (\"Waiting for your Mac\")."
+    echo "  You see this console over SSH, or after choosing \"console only\" in the boot menu."
+    echo
+    echo "  Receiver          systemctl status imacdisplayd    journalctl -u imacdisplayd -f"
+  fi
+  echo "  Wi-Fi             iwctl station wlan0 connect \"NETWORK NAME\""
+  if [ -s "$T/root/.ssh/authorized_keys" ]; then echo "  From the MacBook  ssh root@imac-display.local"; fi
+  echo "  Project           /root/imac-display"
+  if [ -x "$T/usr/local/bin/claude" ]; then echo "  Claude            cd /root/imac-display && claude"; fi
+  echo
+  echo "  Back to macOS: restart and hold the Option key."
+  echo
+} > "$T/etc/motd"
+[ -s "$T/root/.ssh/authorized_keys" ] || say "note: this installer carries no SSH key, so the iMac has no remote login"
 
 # Project repo.
 if [ -f "$BUNDLE" ]; then
@@ -292,6 +313,9 @@ write_entry imac-display.conf        "iMac Display (Arch Linux)" "$BASE_OPTS$EXT
 write_entry imac-display-oldgpu.conf "iMac Display, older Radeon GPU (R9 M380 or M390)" \
   "$BASE_OPTS amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0"
 write_entry imac-display-safe.conf   "iMac Display, safe graphics (if the screen stays black)" "$BASE_OPTS nomodeset"
+if [ "$RECEIVER" = 1 ]; then   # a way back to a text console on the iMac itself
+  write_entry imac-display-console.conf "iMac Display, console only (receiver off)" "$BASE_OPTS$EXTRA imacdisplay.noreceiver"
+fi
 
 [ -f "$T/boot/initramfs-linux.img" ] || die "the boot image was not created"
 
@@ -309,6 +333,17 @@ cat <<'EOF'
   1. Type: poweroff      and pull out the USB stick.
   2. Switch the iMac on while holding the Option key.
   3. Choose "EFI Boot". (macOS is still the default when you do not hold Option.)
+EOF
+if [ "$RECEIVER" = 1 ]; then cat <<'EOF'
+  4. The iMac shows "Waiting for your Mac". Connect the Thunderbolt cable and start
+     iMac Display on the MacBook.
+
+  For a text console on the iMac: in the boot menu that appears for 3 seconds after
+  "EFI Boot", choose "console only (receiver off)".
+
+EOF
+else cat <<'EOF'
   4. Follow the steps shown on screen after it starts.
 
 EOF
+fi

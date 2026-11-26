@@ -37,7 +37,7 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 ## Working rules
 
-- Small commits with clear messages. Pull before starting work. Do not push to any remote unless the user asks.
+- Small commits with clear messages. Pull before starting work. The shared remote is GitHub (`origin`); a push to `main` there starts the build pipeline (`.github/workflows/build.yml`: installer image and app).
 - Write down what you measured, not what you expect. Unverified claims are marked as such.
 - Third-party code (kernel patches, driver forks) is read before it is built or loaded.
 - **On the iMac's internal drive, only the `LINUX` and `LINUXBOOT` partitions are ours.** Nothing else on that drive is written to, resized or reformatted, and the firmware's boot settings are left alone.

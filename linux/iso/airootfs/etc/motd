@@ -1,5 +1,5 @@
 
-  iMac Display installer  (Arch Linux + Claude Code)
+  iMac Display installer
 
   This stick installs Linux on the iMac's internal drive, next to macOS.
 
@@ -15,7 +15,7 @@
        imac-install
 
   It erases only the partitions named LINUXBOOT and LINUX, and asks first.
-  No internet is needed.
+  It installs everything in one go; no internet is needed.
 
-  Also on this stick:  m0-check (hardware facts)   iwctl (Wi-Fi)   claude
+  Also on this stick:  m0-check (hardware facts)   iwctl (Wi-Fi)
 

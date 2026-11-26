@@ -1,0 +1,118 @@
+# Builds both halves of iMac Display:
+#   1. the iMac's Linux installer (a bootable .iso: Arch Linux + the receiver, installed in one go)
+#   2. the MacBook app (iMac Display.dmg)
+# On every push to main and on pull requests the results are kept as workflow artifacts.
+# On a tag like v0.4 they are also attached to a GitHub release.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux-installer:
+    name: Linux installer (.iso)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the image carries a copy of the repo with its history
+
+      - name: Free disk space
+        # The image build needs about 12 GB; the runner's preinstalled toolchains are not needed.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build the image
+        # Optional repository variable IMAC_SSH_PUBKEY: an SSH public key that may log in to the
+        # installed iMac as root. Without it the iMac has no remote login (console only).
+        env:
+          IMAC_SSH_PUBKEY: ${{ vars.IMAC_SSH_PUBKEY }}
+        run: |
+          if [ -n "$IMAC_SSH_PUBKEY" ]; then
+            printf '%s\n' "$IMAC_SSH_PUBKEY" > "$RUNNER_TEMP/imac.pub"
+            export PUBKEY="$RUNNER_TEMP/imac.pub"
+          else
+            export PUBKEY=none
+          fi
+          linux/iso/build.sh
+
+      - name: Checksum
+        run: |
+          cd out
+          sha256sum imac-display-installer-*.iso | tee SHA256SUMS-linux.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imac-display-linux-installer
+          path: |
+            out/imac-display-installer-*.iso
+            out/SHA256SUMS-linux.txt
+          compression-level: 0   # the image is already compressed
+          if-no-files-found: error
+          retention-days: 14
+
+  mac-app:
+    name: MacBook app (.dmg)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcrun --show-sdk-version
+
+      - name: Build the app
+        # Builds the sound device, runs its self-test, builds the app and the disk image.
+        # Signed ad hoc: there is no Apple Developer certificate in this project.
+        run: mac/scripts/build-app.sh
+
+      - name: Checksum
+        run: |
+          cd out
+          shasum -a 256 "iMac Display.dmg" | tee SHA256SUMS-mac.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imac-display-mac-app
+          path: |
+            out/iMac Display.dmg
+            out/SHA256SUMS-mac.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-installer, mac-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -lh dist
+          gh release create "$GITHUB_REF_NAME" --title "iMac Display $GITHUB_REF_NAME" --generate-notes dist/*

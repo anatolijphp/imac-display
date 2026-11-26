@@ -203,7 +203,7 @@ boot() {
     echo "boot:       $(findmnt -no SOURCE,FSTYPE /boot)"
     echo "state:      $(systemctl is-system-running)"
     echo "failed units:"; systemctl --failed --no-legend --plain | sed "s/^/  /"
-    echo "claude:     $(/usr/local/bin/claude --version 2>&1)"
+    echo "receiver:   $(ls /usr/local/bin/imacdisplayd 2>&1), service $(systemctl is-enabled imacdisplayd 2>&1)"
     echo "repo:       $(git -C /root/imac-display log --oneline 2>&1 | head -1)"
     echo "repo docs:  $(ls /root/imac-display/docs | tr "\n" " ")"
     echo "sshd:       $(/usr/bin/sshd -T 2>/dev/null | grep -E "^(passwordauthentication|permitrootlogin)" | tr "\n" " ")"
@@ -213,7 +213,7 @@ boot() {
   ' | tee "$W/boot.log"
   grep -q "^hostname:   imac-display" "$W/boot.log" || die "wrong hostname on the installed system"
   grep -q "^root: .*ext4" "$W/boot.log" || die "root is not on ext4"
-  grep -q "^claude:     [0-9]" "$W/boot.log" || die "claude does not run on the installed system"
+  grep -q "^receiver:   /usr/local/bin/imacdisplayd, service enabled" "$W/boot.log" || die "the receiver is not installed and enabled on the installed system"
   grep -q "^repo:       [0-9a-f]\{7\}" "$W/boot.log" || die "project repo missing on the installed system"
   vssh poweroff || true
   vm_wait_off 180
