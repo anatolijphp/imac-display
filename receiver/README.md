@@ -68,7 +68,7 @@ mouse moves and goes away after 10 s without movement):
   US layout; "Show password" to check it, Join from 8 characters). Talks to iwd over D-Bus
   (`src/wifi.cpp`, an iwd agent answers its password question; the password is never logged).
   Known networks join without asking; if the saved password fails, it asks again.
-- **Background:** a few very soft shadows drift over the glow (periods 53-113 s), composed at 3 frames
+- **Background:** a few very soft shadows drift over the glow (paths of 21-45 s, up to ~45 % darker), composed at 3 frames
   a second from a low-resolution field, scaled up and dithered (about 18 % of one CPU core while the
   waiting screen is up; nothing while video runs). The dots still animate at 15 per second.
 - Input is read on a thread of its own: a redraw (20-40 ms at 4K) never makes the kernel drop pointer

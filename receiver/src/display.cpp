@@ -44,10 +44,10 @@ constexpr double kGlow[3] = {44, 45, 50}, kEdge[3] = {8, 8, 10};
 // Positions and amplitudes in screen heights, periods in seconds, depth = darkening at the centre.
 struct Shadow { double x, y, ax, ay, px, py, phase, radius, depth; };
 constexpr Shadow kShadows[] = {
-    {0.55, 0.30, 0.45, 0.20, 83, 61, 0.0, 0.42, 0.30},
-    {1.30, 0.75, 0.40, 0.25, 97, 71, 1.7, 0.50, 0.26},
-    {0.20, 0.85, 0.35, 0.18, 67, 89, 3.1, 0.38, 0.24},
-    {1.10, 0.10, 0.50, 0.15, 113, 53, 4.4, 0.45, 0.22},
+    {0.55, 0.30, 0.45, 0.20, 33, 24, 0.0, 0.34, 0.45},
+    {1.30, 0.75, 0.40, 0.25, 39, 28, 1.7, 0.40, 0.40},
+    {0.20, 0.85, 0.35, 0.18, 27, 36, 3.1, 0.30, 0.38},
+    {1.10, 0.10, 0.50, 0.15, 45, 21, 4.4, 0.36, 0.35},
 };
 
 void centered_text(cairo_t* cr, const std::string& t, double cx, double y, double size, cairo_font_weight_t wt) {
