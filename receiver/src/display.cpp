@@ -1,6 +1,11 @@
 #include "display.h"
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl3.h>
 #include <cairo.h>
+#include <gbm.h>
+#include <poll.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/input-event-codes.h>
@@ -297,6 +302,8 @@ bool Display::open() {
   py_ = h_ * 0.62;
   dialog_ = Dialog::None;
   if (!make_cursor()) fprintf(stderr, "display: no pointer (hardware cursor not available)\n");
+  gl_ = gl_init();
+  fprintf(stderr, "display: waiting screen drawn %s\n", gl_ ? "on the GPU, 30 frames a second" : "by the CPU (GPU setup failed)");
   fprintf(stderr, "display: %s, %dx%d@%d, showing the waiting screen\n", path.c_str(), w_, h_, mode.vrefresh);
   has_status_ = false;
   return true;
@@ -304,6 +311,7 @@ bool Display::open() {
 
 void Display::close() {
   if (fd_ < 0) return;
+  gl_close();
   if (saved_crtc_) {
     auto* c = (drmModeCrtc*)saved_crtc_;
     if (c->buffer_id) drmModeSetCrtc(fd_, c->crtc_id, c->buffer_id, c->x, c->y, &conn_id_, 1, &c->mode);
@@ -627,6 +635,7 @@ void Display::render_base(const Status& st) {
   cairo_surface_flush(base_);
   content_spans();
   force_frame_ = true;
+  content_dirty_ = true;
 }
 
 void Display::content_spans() {
@@ -740,7 +749,7 @@ void Display::draw_dots() {
   cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
   cairo_paint(cr);
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-  double t = frame_ / 15.0;  // seconds at 15 fps
+  double t = (mono_us() - start_us_) / 1e6;
   for (int i = 0; i < 3; i++) {
     double phase = t * 2 * M_PI / 1.4 - i * 0.9;  // one wave every 1.4 s, left to right
     double a = 0.25 + 0.75 * (0.5 + 0.5 * std::sin(phase));
@@ -779,9 +788,11 @@ ScreenTarget Display::target() const {
 
 void Display::resume() {
   if (fd_ < 0) return;
-  paused_ = false;
+  std::lock_guard<std::mutex> l(drm_mu_);
   if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) != 0)
     fprintf(stderr, "display: taking the screen back failed: %s\n", strerror(errno));
+  gl_release_shown();
+  paused_ = false;
   has_status_ = false;  // force a full redraw on the next show()
 }
 
@@ -795,9 +806,11 @@ void Display::pause() {
 void Display::blank() {
   if (fd_ < 0) return;
   pause();
+  std::lock_guard<std::mutex> l(drm_mu_);
   memset(map_, 0, size_);
   if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) != 0)
     fprintf(stderr, "display: blank failed: %s\n", strerror(errno));
+  gl_release_shown();
   has_status_ = false;  // the waiting screen is redrawn in full when it comes back
 }
 
@@ -820,11 +833,12 @@ void Display::show(const Status& s) {
 void Display::animate() {
   if (fd_ < 0 || !has_status_ || paused_) return;
   frame_++;
+  if (gl_) { gl_frame(); return; }
   draw_dots();
   // The whole screen (drifting background, content, dots) 3 times a second: the shadows move a
   // fraction of a grey level per step. In between only the dots' rectangle, from the background saved
   // at the last full frame: written in one pass, never a frame without the dots.
-  if (force_frame_ || frame_ % 5 == 0) {
+  if (force_frame_ || frame_ % 10 == 0) {
     force_frame_ = false;
     frame();
   } else if (dialog_ == Dialog::None) {
@@ -860,6 +874,7 @@ void Display::redraw() {
     snprintf(name, sizeof name, "/%03u.png", snap_n_++);
     // PNG compression of a 4K picture takes about a second: on a copy, in the background, so the
     // pointer keeps up while testing.
+    if (gl_) { gl_snap_path_ = snap_dir_ + name; return; }  // what the GPU draws, read back (gl_frame)
     cairo_surface_t* copy = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
     cairo_surface_flush(copy);
     compose(cairo_image_surface_get_data(copy), cairo_image_surface_get_stride(copy));
@@ -1138,4 +1153,292 @@ std::string Display::take_wifi_password() {
   std::string p;
   p.swap(wifi_pass_);
   return p;
+}
+
+// --- the waiting screen on the GPU ------------------------------------------------------------
+
+namespace {
+
+const char* kBgVertex = R"(#version 300 es
+void main() {  // one triangle covering the screen
+  vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+  gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+
+// Same picture as the CPU path: radial glow, four drifting Gaussian shadows, a static triangular
+// dither of one grey step, the content texture (premultiplied, cairo's byte order) over it, the dots.
+const char* kBgFragment = R"(#version 300 es
+precision highp float;
+uniform vec2 size;
+uniform vec4 sh[4];      // centre x, y, radius, depth (pixels from the top left)
+uniform vec4 dots;       // centre x, y, spacing, radius
+uniform vec3 dot_a;
+uniform int show_dots;
+uniform sampler2D content;
+out vec4 color;
+float hash(vec2 p) {
+  p = fract(p * vec2(443.897, 441.423));
+  p += dot(p, p.yx + 19.19);
+  return fract((p.x + p.y) * p.x);
+}
+void main() {
+  vec2 px = vec2(gl_FragCoord.x, size.y - gl_FragCoord.y);
+  vec2 c = vec2(size.x * 0.5, size.y * 0.40);
+  float r = min(1.0, length(px - c) / (size.y * 1.05));
+  r = r * r * (3.0 - 2.0 * r);
+  vec3 col = mix(vec3(44.0, 45.0, 50.0), vec3(8.0, 8.0, 10.0), r);
+  float shade = 1.0;
+  for (int i = 0; i < 4; i++) {
+    vec2 d = px - sh[i].xy;
+    shade *= 1.0 - sh[i].w * exp(-dot(d, d) / (sh[i].z * sh[i].z));
+  }
+  col *= shade;
+  float n = hash(floor(px)) + hash(floor(px) + 17.31) - 1.0;
+  col = floor(col + n + 0.5) / 255.0;
+  vec4 ct = texelFetch(content, ivec2(px), 0).bgra;
+  col = ct.rgb + col * (1.0 - ct.a);
+  if (show_dots == 1) {
+    for (int i = 0; i < 3; i++) {
+      vec2 dc = dots.xy + vec2(float(i - 1) * dots.z, 0.0);
+      float a = dot_a[i] * clamp(dots.w + 0.5 - length(px + 0.5 - dc), 0.0, 1.0);
+      col = mix(col, vec3(1.0), a);
+    }
+  }
+  color = vec4(col, 1.0);
+}
+)";
+
+struct GlFb { int fd; uint32_t fb; };
+void destroy_gl_fb(gbm_bo*, void* data) {
+  auto* c = (GlFb*)data;
+  if (c->fb) drmModeRmFB(c->fd, c->fb);
+  delete c;
+}
+uint32_t gl_fb_for(int fd, gbm_bo* bo) {
+  if (auto* c = (GlFb*)gbm_bo_get_user_data(bo)) return c->fb;
+  uint32_t handles[4] = {gbm_bo_get_handle(bo).u32}, strides[4] = {gbm_bo_get_stride(bo)}, offsets[4] = {0};
+  auto* c = new GlFb{fd, 0};
+  if (drmModeAddFB2(fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), gbm_bo_get_format(bo), handles, strides, offsets,
+                    &c->fb, 0) != 0)
+    fprintf(stderr, "display: drmModeAddFB2 failed: %s\n", strerror(errno));
+  gbm_bo_set_user_data(bo, c, destroy_gl_fb);
+  return c->fb;
+}
+
+GLuint gl_compile(GLenum type, const char* src) {
+  GLuint sh = glCreateShader(type);
+  glShaderSource(sh, 1, &src, nullptr);
+  glCompileShader(sh);
+  GLint ok = 0;
+  glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+  if (!ok) {
+    char log[1024];
+    glGetShaderInfoLog(sh, sizeof log, nullptr, log);
+    fprintf(stderr, "display: shader: %s\n", log);
+  }
+  return sh;
+}
+
+}  // namespace
+
+bool Display::gl_init() {
+  auto* gbm = gbm_create_device(fd_);
+  if (!gbm) return false;
+  gbm_ = gbm;
+  auto* gs = gbm_surface_create(gbm, w_, h_, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+  if (!gs) { gl_close(); return false; }
+  gs_ = gs;
+  EGLDisplay dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, nullptr);
+  if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, nullptr, nullptr)) { gl_close(); return false; }
+  edpy_ = dpy;
+  eglBindAPI(EGL_OPENGL_ES_API);
+  EGLint cattr[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+                    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE};
+  EGLConfig configs[64];
+  EGLint n = 0;
+  eglChooseConfig(dpy, cattr, configs, 64, &n);
+  EGLConfig conf = nullptr;
+  for (int i = 0; i < n; i++) {
+    EGLint id;
+    eglGetConfigAttrib(dpy, configs[i], EGL_NATIVE_VISUAL_ID, &id);
+    if (id == GBM_FORMAT_XRGB8888) { conf = configs[i]; break; }
+  }
+  EGLint ctxattr[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_NONE};
+  EGLContext ctx = conf ? eglCreateContext(dpy, conf, EGL_NO_CONTEXT, ctxattr) : EGL_NO_CONTEXT;
+  if (ctx == EGL_NO_CONTEXT) { gl_close(); return false; }
+  ectx_ = ctx;
+  EGLSurface surf = eglCreateWindowSurface(dpy, conf, (EGLNativeWindowType)gs, nullptr);
+  if (surf == EGL_NO_SURFACE) { gl_close(); return false; }
+  esurf_ = surf;
+  if (!eglMakeCurrent(dpy, surf, surf, ctx)) { gl_close(); return false; }
+  eglSwapInterval(dpy, 0);
+
+  prog_ = glCreateProgram();
+  glAttachShader(prog_, gl_compile(GL_VERTEX_SHADER, kBgVertex));
+  glAttachShader(prog_, gl_compile(GL_FRAGMENT_SHADER, kBgFragment));
+  glLinkProgram(prog_);
+  GLint ok = 0;
+  glGetProgramiv(prog_, GL_LINK_STATUS, &ok);
+  if (!ok) { gl_close(); return false; }
+  glUseProgram(prog_);
+  u_size_ = glGetUniformLocation(prog_, "size");
+  u_sh_ = glGetUniformLocation(prog_, "sh");
+  u_dots_ = glGetUniformLocation(prog_, "dots");
+  u_dot_a_ = glGetUniformLocation(prog_, "dot_a");
+  u_show_dots_ = glGetUniformLocation(prog_, "show_dots");
+  glUniform1i(glGetUniformLocation(prog_, "content"), 0);
+  glGenVertexArrays(1, &vao_);
+  glBindVertexArray(vao_);
+  glGenTextures(1, &tex_);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex_);
+  glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w_, h_);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  content_dirty_ = true;
+  return glGetError() == GL_NO_ERROR;
+}
+
+void Display::gl_close() {
+  if (!gbm_) return;
+  {
+    std::lock_guard<std::mutex> l(drm_mu_);
+    for (int i = 0; flip_pending_ && i < 5; i++) {  // our last flip, if any
+      pollfd pf{fd_, POLLIN, 0};
+      if (poll(&pf, 1, 100) > 0) {
+        drmEventContext ev{};
+        ev.version = 2;
+        ev.page_flip_handler = on_flip;
+        drmHandleEvent(fd_, &ev);
+      }
+    }
+  }
+  if (edpy_) {
+    if (prog_) glDeleteProgram(prog_);
+    if (tex_) glDeleteTextures(1, &tex_);
+    if (vao_) glDeleteVertexArrays(1, &vao_);
+    eglMakeCurrent((EGLDisplay)edpy_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (esurf_) eglDestroySurface((EGLDisplay)edpy_, (EGLSurface)esurf_);
+    if (ectx_) eglDestroyContext((EGLDisplay)edpy_, (EGLContext)ectx_);
+    eglTerminate((EGLDisplay)edpy_);
+  }
+  prog_ = tex_ = vao_ = 0;
+  edpy_ = ectx_ = esurf_ = nullptr;
+  // The dumb buffer goes back on the panel before our buffers are freed (freeing a scanned-out
+  // framebuffer turns the panel off).
+  if (shown_bo_ && fb_id_) drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_);
+  if (gs_ && shown_bo_) gbm_surface_release_buffer((gbm_surface*)gs_, (gbm_bo*)shown_bo_);
+  if (gs_ && pending_bo_) gbm_surface_release_buffer((gbm_surface*)gs_, (gbm_bo*)pending_bo_);
+  shown_bo_ = pending_bo_ = nullptr;
+  flip_pending_ = false;
+  if (gs_) gbm_surface_destroy((gbm_surface*)gs_);
+  gs_ = nullptr;
+  gbm_device_destroy((gbm_device*)gbm_);
+  gbm_ = nullptr;
+  gl_ = false;
+}
+
+void Display::gl_release_shown() {
+  if (!gl_ || !gs_) return;
+  if (shown_bo_) gbm_surface_release_buffer((gbm_surface*)gs_, (gbm_bo*)shown_bo_);
+  shown_bo_ = nullptr;
+}
+
+void Display::on_flip(int, unsigned, unsigned, unsigned, void* self_) {
+  auto* self = (Display*)self_;
+  if (self->shown_bo_ && self->gs_) gbm_surface_release_buffer((gbm_surface*)self->gs_, (gbm_bo*)self->shown_bo_);
+  self->shown_bo_ = self->pending_bo_;
+  self->pending_bo_ = nullptr;
+  self->flip_pending_ = false;
+}
+
+void Display::on_drm_event() {
+  std::lock_guard<std::mutex> l(drm_mu_);
+  if (!flip_pending_) return;  // not ours: the video presenter reads its own events
+  pollfd pf{fd_, POLLIN, 0};
+  if (poll(&pf, 1, 0) <= 0) return;
+  drmEventContext ev{};
+  ev.version = 2;
+  ev.page_flip_handler = on_flip;
+  drmHandleEvent(fd_, &ev);
+}
+
+void Display::hand_over() {
+  std::lock_guard<std::mutex> l(drm_mu_);
+  paused_ = true;
+  for (int i = 0; flip_pending_ && i < 5; i++) {
+    pollfd pf{fd_, POLLIN, 0};
+    if (poll(&pf, 1, 100) > 0) {
+      drmEventContext ev{};
+      ev.version = 2;
+      ev.page_flip_handler = on_flip;
+      drmHandleEvent(fd_, &ev);
+    }
+  }
+}
+
+void Display::gl_frame() {
+  std::lock_guard<std::mutex> l(drm_mu_);
+  if (paused_ || flip_pending_ || !has_status_) return;  // one flip at a time; the next tick draws again
+  if (content_dirty_) {
+    glBindTexture(GL_TEXTURE_2D, tex_);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, cairo_image_surface_get_stride(base_) / 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, cairo_image_surface_get_data(base_));
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    content_dirty_ = false;
+  }
+  double t = (mono_us() - start_us_) / 1e6;
+  float sh[16];
+  for (int k = 0; k < 4; k++) {
+    const Shadow& d = kShadows[k];
+    sh[k * 4 + 0] = float(h_ * (d.x + d.ax * std::sin(2 * M_PI * t / d.px + d.phase)));
+    sh[k * 4 + 1] = float(h_ * (d.y + d.ay * std::sin(2 * M_PI * t / d.py + d.phase * 1.3)));
+    sh[k * 4 + 2] = float(d.radius * h_);
+    sh[k * 4 + 3] = float(d.depth);
+  }
+  float a[3];
+  for (int i = 0; i < 3; i++) a[i] = float(0.25 + 0.75 * (0.5 + 0.5 * std::sin(t * 2 * M_PI / 1.4 - i * 0.9)));
+  glViewport(0, 0, w_, h_);
+  glUniform2f(u_size_, float(w_), float(h_));
+  glUniform4fv(u_sh_, 4, sh);
+  glUniform4f(u_dots_, dots_x_ + dots_w_ / 2.0f, dots_y_ + dots_h_ / 2.0f, dot_r_ * 4.0f, float(dot_r_));
+  glUniform3fv(u_dot_a_, 1, a);
+  glUniform1i(u_show_dots_, dialog_ == Dialog::None ? 1 : 0);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glFinish();  // done before the flip is asked for (see video.cpp: otherwise it lands a refresh late)
+  if (!gl_snap_path_.empty()) {  // testing: this frame as a PNG (bottom-up rows, RGBA)
+    std::vector<uint8_t> px(size_t(w_) * h_ * 4);
+    glReadPixels(0, 0, w_, h_, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    cairo_surface_t* img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
+    uint8_t* d = cairo_image_surface_get_data(img);
+    int ds = cairo_image_surface_get_stride(img);
+    for (int y = 0; y < h_; y++)
+      for (int x = 0; x < w_; x++) {
+        const uint8_t* p = &px[(size_t(h_ - 1 - y) * w_ + x) * 4];
+        ((uint32_t*)(d + size_t(y) * ds))[x] = uint32_t(p[0]) << 16 | uint32_t(p[1]) << 8 | p[2];
+      }
+    cairo_surface_mark_dirty(img);
+    std::thread([img, path = gl_snap_path_] {
+      cairo_surface_write_to_png(img, path.c_str());
+      cairo_surface_destroy(img);
+    }).detach();
+    gl_snap_path_.clear();
+  }
+  eglSwapBuffers((EGLDisplay)edpy_, (EGLSurface)esurf_);
+  gbm_bo* bo = gbm_surface_lock_front_buffer((gbm_surface*)gs_);
+  if (!bo) return;
+  uint32_t fb = gl_fb_for(fd_, bo);
+  if (drmModePageFlip(fd_, crtc_id_, fb, DRM_MODE_PAGE_FLIP_EVENT, this) == 0) {
+    pending_bo_ = bo;
+    flip_pending_ = true;
+  } else {
+    // No flip possible (e.g. the CRTC was just set by someone else): set it directly.
+    if (drmModeSetCrtc(fd_, crtc_id_, fb, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) == 0) {
+      gl_release_shown();
+      shown_bo_ = bo;
+    } else {
+      gbm_surface_release_buffer((gbm_surface*)gs_, bo);
+    }
+  }
 }

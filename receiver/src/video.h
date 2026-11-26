@@ -45,8 +45,9 @@ class Video {
   // release_screen is called on the presenter thread just before its GPU buffers are freed (while the
   // owner is blocked in ~Video), so the owner can put its own picture on the panel first.
   // screen.fd < 0: decode only, nothing shown (testing).
+  // take_screen is called on the presenter thread just before the first picture goes on the panel.
   Video(ScreenTarget screen, VideoConfig cfg, std::function<void()> request_keyframe,
-        std::function<void()> release_screen);
+        std::function<void()> release_screen, std::function<void()> take_screen = nullptr);
   ~Video();
 
   void push(uint16_t tile, uint8_t flags, uint64_t pts_us, const uint8_t* data, size_t len);
@@ -82,6 +83,7 @@ class Video {
   VideoConfig cfg_;
   std::function<void()> request_keyframe_;
   std::function<void()> release_screen_;
+  std::function<void()> take_screen_;
   std::vector<std::unique_ptr<Tile>> tiles_;
   std::map<uint16_t, int> tile_index_;  // tile id -> index
 

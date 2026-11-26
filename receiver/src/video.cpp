@@ -132,9 +132,11 @@ size_t Video::tile_bytes(int i) const {
 }
 
 Video::Video(ScreenTarget screen, VideoConfig cfg, std::function<void()> request_keyframe,
-             std::function<void()> release_screen)
+             std::function<void()> release_screen,
+             std::function<void()> take_screen)
     : screen_(screen), cfg_(std::move(cfg)), request_keyframe_(std::move(request_keyframe)),
-      release_screen_(std::move(release_screen)) {
+      release_screen_(std::move(release_screen)),
+      take_screen_(std::move(take_screen)) {
   for (size_t i = 0; i < cfg_.tiles.size(); i++) {
     auto t = std::make_unique<Tile>();
     t->index = int(i);
@@ -677,6 +679,7 @@ void Video::present_loop() {
     gbm_bo* bo = gbm_surface_lock_front_buffer(gs);
     uint32_t fb = fb_for(screen_.fd, bo);
     if (!crtc_set) {
+      if (take_screen_) take_screen_();  // the waiting screen stops and finishes its last flip first
       if (drmModeSetCrtc(screen_.fd, screen_.crtc_id, fb, 0, 0, &screen_.conn_id, 1,
                          (drmModeModeInfo*)screen_.mode) != 0)
         fprintf(stderr, "video: drmModeSetCrtc failed: %s\n", strerror(errno));

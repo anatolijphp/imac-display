@@ -1,7 +1,9 @@
 // The bare screen: DRM/KMS dumb buffer on the connected panel, plus the waiting screen drawn with cairo.
 // Video (stage 3) will replace the dumb buffer with GPU-imported pictures; the waiting screen stays.
 #pragma once
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -30,7 +32,7 @@ class Display {
     bool wifi = false;     // the link in use: Wi-Fi (testing) instead of the Thunderbolt cable
   };
   void show(const Status& s);  // full redraw when something changed
-  void animate();              // next frame of the "waiting" dots; call ~15 times a second
+  void animate();              // next frame (drifting background, dots); call 30 times a second
   bool save_png(const std::string& path) const;  // the current picture, for checking without looking
   void set_snapshot_dir(const std::string& d) { snap_dir_ = d; }  // testing: every redraw saved as NNN.png
 
@@ -41,6 +43,12 @@ class Display {
   bool paused() const { return paused_; }
   void resume();
   void blank();  // black panel (between two video streams), stays paused
+  // Called by the video presenter (its thread) just before its first picture takes the panel: stops
+  // the waiting screen and waits for its last page flip, so the two never share flip events.
+  void hand_over();
+  // The waiting screen's page flips: poll flip_fd() (-1 when none is pending), then on_drm_event().
+  int flip_fd() const { return flip_pending_ ? fd_ : -1; }
+  void on_drm_event();
 
   // The iMac's own mouse and keyboard on the waiting screen (outside a session): a pointer, the
   // Restart / Shut Down buttons and their confirmation dialog. press() returns the confirmed action.
@@ -98,12 +106,35 @@ class Display {
   cairo_surface_t* dots_layer_ = nullptr;  // the dots alone (ARGB), drawn every frame
   void draw_dots();
   void blend_dots_row(int r, uint32_t* px);  // dots row r over px (dots_w_ pixels)
+
+  // The waiting screen on the GPU: background, shadows, dither and dots computed per pixel in a
+  // shader, the content (base_) as a texture uploaded when it changes. 30 frames a second at almost
+  // no CPU. The CPU path above stays for snapshots and as a fallback (gl_ false).
+  bool gl_init();
+  void gl_close();
+  void gl_frame();
+  void gl_release_shown();  // drm_mu_ held: our buffer is off the panel (video, blank, resume)
+  static void on_flip(int fd, unsigned seq, unsigned sec, unsigned usec, void* self);
+  bool gl_ = false;
+  void* gbm_ = nullptr;   // gbm_device*
+  void* gs_ = nullptr;    // gbm_surface*
+  void* edpy_ = nullptr;  // EGLDisplay
+  void* ectx_ = nullptr;  // EGLContext
+  void* esurf_ = nullptr; // EGLSurface
+  unsigned prog_ = 0, tex_ = 0, vao_ = 0;
+  int u_size_ = -1, u_sh_ = -1, u_dots_ = -1, u_dot_a_ = -1, u_show_dots_ = -1;
+  bool content_dirty_ = true;
+  void* shown_bo_ = nullptr;    // gbm_bo* on the panel
+  void* pending_bo_ = nullptr;  // gbm_bo* waiting for its flip
+  std::atomic<bool> flip_pending_{false};
+  std::string gl_snap_path_;  // testing: read the next GPU frame back into this PNG
+  std::mutex drm_mu_;
   bool force_frame_ = true;          // content changed: compose the whole screen at the next animate()
   bool has_status_ = false;
   Status status_;
   int dots_x_ = 0, dots_y_ = 0, dots_w_ = 0, dots_h_ = 0, dot_r_ = 0;
   unsigned frame_ = 0;
-  bool paused_ = false;
+  std::atomic<bool> paused_{false};
   void* mode_ = nullptr;  // drmModeModeInfo
 
   Rect btn_restart_, btn_shutdown_, btn_wifi_, dlg_cancel_, dlg_confirm_, seg_tb_, seg_wifi_, dlg_done_, show_pass_;

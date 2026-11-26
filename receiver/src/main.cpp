@@ -99,7 +99,7 @@ class Daemon {
     storage_.set_iface(opt_.iface, is_wireless(opt_.iface));
     if (opt_.display) wifi_ = std::make_unique<Wifi>(wifi_iface(), [this] { wifi_changed(); });
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
-    itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
+    itimerspec ats{{0, 33333333}, {0, 33333333}};  // 30 fps: the waiting screen's background and dots
     timerfd_settime(anim_, 0, &ats, nullptr);
   }
 
@@ -124,6 +124,7 @@ class Daemon {
       add(kf_timer_, POLLIN, 10);
       add(mic_efd_, POLLIN, 11);
       if (wifi_ && wifi_->ok()) add(wifi_->fd(), wifi_->events(), 12);
+      if (display_.flip_fd() >= 0) add(display_.flip_fd(), POLLIN, 13);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
         if (errno == EINTR) continue;
@@ -152,6 +153,7 @@ class Daemon {
           case 11: { uint64_t n; (void)!read(mic_efd_, &n, sizeof n); send_mic(); break; }
           case 10: { uint64_t n; (void)!read(kf_timer_, &n, sizeof n); if (kf_pending_) send_keyframe_request(); break; }
           case 12: wifi_->process(); break;
+          case 13: display_.on_drm_event(); break;
         }
       }
     }
@@ -425,7 +427,8 @@ class Daemon {
     video_dec_ = std::make_unique<Video>(
         target, cfg,
         [this] { uint64_t one = 1; (void)!write(kf_efd_, &one, sizeof one); },
-        [this] { if (blank_on_release_) display_.blank(); else display_.resume(); });
+        [this] { if (blank_on_release_) display_.blank(); else display_.resume(); },
+        [this] { display_.hand_over(); });
   }
 
   // Once the presenter has put its first picture up, the waiting screen stops drawing.

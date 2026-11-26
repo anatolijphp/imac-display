@@ -68,9 +68,12 @@ mouse moves and goes away after 10 s without movement):
   US layout; "Show password" to check it, Join from 8 characters). Talks to iwd over D-Bus
   (`src/wifi.cpp`, an iwd agent answers its password question; the password is never logged).
   Known networks join without asking; if the saved password fails, it asks again.
-- **Background:** a few very soft shadows drift over the glow (paths of 21-45 s, up to ~45 % darker), composed at 3 frames
-  a second from a low-resolution field, scaled up and dithered (about 18 % of one CPU core while the
-  waiting screen is up; nothing while video runs). The dots still animate at 15 per second.
+- **Background:** a few soft shadows drift over the glow (paths of 21-45 s, up to ~45 % darker),
+  drawn by the GPU at 30 frames a second: glow, shadows, a one-step dither and the dots are computed per
+  pixel in a shader, the text and buttons are a texture uploaded only when they change (about 2 % of one
+  CPU core). Before its first picture, video takes the panel over with `Display::hand_over()` (the
+  waiting screen's last page flip finishes first, so the two never read each other's flip events).
+  Without a working GPU the same picture is composed by the CPU, 3 frames a second.
 - Input is read on a thread of its own: a redraw (20-40 ms at 4K) never makes the kernel drop pointer
   motion or keys, here or in a session.
 - While a Mac is connected none of this is shown, and all input goes to the MacBook.
