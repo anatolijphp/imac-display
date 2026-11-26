@@ -31,8 +31,12 @@ class Storage {
   void session_started();               // starts Samba, announces mounted volumes
   void session_ended();                 // stops Samba; drives stay mounted
   void eject(const std::string& id);    // STORAGE_EJECT from the MacBook
+  // The link changed (between sessions): Samba listens there from the next session on. The iMac's own
+  // macOS volume is offered over Thunderbolt only, never over Wi-Fi.
+  void set_iface(const std::string& iface, bool wireless) { opt_.iface = iface; wireless_ = wireless; }
 
  private:
+  bool wireless_ = false;
   struct Volume {
     std::string id, devnode, syspath, disk_syspath, label, fs, mountpoint, share;
     std::string share_path;  // directory shared over SMB; usually the mountpoint

@@ -15,7 +15,7 @@
 
 static const char* kDir = "/dev/input";
 
-Input::Input(Emit emit) : emit_(std::move(emit)) {
+Input::Input(Emit emit, Local local) : emit_(std::move(emit)), local_(std::move(local)) {
   inotify_fd_ = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   inotify_add_watch(inotify_fd_, kDir, IN_CREATE | IN_ATTRIB | IN_DELETE);
   if (DIR* d = opendir(kDir)) {
@@ -137,7 +137,17 @@ static uint8_t button_number(uint16_t code) {
 }
 
 void Input::handle(Dev& d, uint16_t type, uint16_t code, int32_t value) {
-  if (!active_) return;
+  if (!active_) {  // the iMac's own waiting screen
+    if (!local_) return;
+    if (type == EV_REL && code == REL_X) d.dx += value;
+    else if (type == EV_REL && code == REL_Y) d.dy += value;
+    else if (type == EV_KEY && value != 2) local_(0, 0, code, value);
+    else if (type == EV_SYN && code == SYN_REPORT && (d.dx || d.dy)) {
+      local_(d.dx, d.dy, 0, 0);
+      d.dx = d.dy = 0;
+    }
+    return;
+  }
   if (type == EV_KEY) {
     if (value == 2) return;  // autorepeat: the MacBook does its own key repeat
     if (uint8_t b = button_number(code)) {

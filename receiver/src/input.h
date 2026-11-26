@@ -15,7 +15,10 @@ class Input {
  public:
   // emit(type, payload, len) sends one INPUT_* message.
   using Emit = std::function<void(uint8_t type, const void* payload, size_t len)>;
-  explicit Input(Emit emit);
+  // Outside a session the devices are not grabbed and nothing is sent; local() gets pointer motion
+  // (dx, dy, code 0) and key/button presses (code, value 1 down / 0 up) for the waiting screen.
+  using Local = std::function<void(int dx, int dy, uint16_t code, int value)>;
+  Input(Emit emit, Local local);
   ~Input();
 
   int inotify_fd() const { return inotify_fd_; }
@@ -40,6 +43,7 @@ class Input {
   void flush_pointer(Dev& d);
 
   Emit emit_;
+  Local local_;
   int inotify_fd_ = -1;
   bool active_ = false;
   std::map<int, Dev> devs_;

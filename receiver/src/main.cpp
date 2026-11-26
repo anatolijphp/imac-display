@@ -1,6 +1,9 @@
 // imacdisplayd: the iMac side of PROTOCOL.md.
 // Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding, USB drives over SMB.
 // Waiting screen on the bare panel, video (CPU decode per tile, GPU display), sound (ALSA).
+#include <dirent.h>
+#include <spawn.h>
+#include <sys/stat.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -47,20 +50,43 @@ json imac_hello() {
           {"features", {"input", "storage"}}};
 }
 
+// The link chosen on the waiting screen (Thunderbolt or Wi-Fi), kept across restarts.
+const char* kLinkFile = "/var/lib/imacdisplayd/link";
+
+// The first Wi-Fi interface (one with a wireless/ directory in sysfs), or wlan0.
+std::string wifi_iface() {
+  if (DIR* d = opendir("/sys/class/net")) {
+    while (dirent* e = readdir(d)) {
+      if (e->d_name[0] == '.') continue;
+      std::string w = std::string("/sys/class/net/") + e->d_name + "/wireless";
+      if (access(w.c_str(), F_OK) == 0) { std::string n = e->d_name; closedir(d); return n; }
+    }
+    closedir(d);
+  }
+  return "wlan0";
+}
+
+bool is_wireless(const std::string& iface) {
+  return access(("/sys/class/net/" + iface + "/wireless").c_str(), F_OK) == 0 || iface.rfind("wl", 0) == 0;
+}
+
 struct Options {
   std::string iface = "thunderbolt0";
+  bool iface_given = false;  // --iface on the command line: fixed, the link file is not used
   uint16_t port = proto::kPort;
   bool storage_read_only = false;
   bool share_macos = true;
   bool display = true;
   std::string screenshot;  // write the waiting screen to this PNG once it is drawn (testing)
+  std::string snapshots;   // directory: every redraw of the waiting screen as NNN.png (testing)
 };
 
 class Daemon {
  public:
   explicit Daemon(Options o)
       : opt_(std::move(o)),
-        input_([this](uint8_t t, const void* p, size_t n) { send_ctrl(t, p, n); }),
+        input_([this](uint8_t t, const void* p, size_t n) { send_ctrl(t, p, n); },
+               [this](int dx, int dy, uint16_t code, int value) { local_input(dx, dy, code, value); }),
         storage_({opt_.iface, opt_.storage_read_only, opt_.share_macos},
                  [this](uint8_t t, const std::string& j) { send_ctrl(t, j.data(), j.size()); }) {
     timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
@@ -69,6 +95,7 @@ class Daemon {
     kf_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     kf_timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     mic_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    storage_.set_iface(opt_.iface, is_wireless(opt_.iface));
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
     timerfd_settime(anim_, 0, &ats, nullptr);
@@ -77,6 +104,7 @@ class Daemon {
   int run() {
     fprintf(stderr, "imacdisplayd: listening on %s port %u\n", opt_.iface.c_str(), opt_.port);
     try_listen();
+    display_.set_snapshot_dir(opt_.snapshots);
     update_screen();
     while (!g_stop) {
       std::vector<pollfd> pfds;
@@ -142,6 +170,47 @@ class Daemon {
       if (listen_err_ != e.what()) fprintf(stderr, "net: not listening yet (%s), retrying every second\n", e.what());
       listen_err_ = e.what();
     }
+  }
+
+  // --- the iMac's own mouse and keyboard on the waiting screen ---------------------------------
+  void local_input(int dx, int dy, uint16_t code, int value) {
+    if (ctrl_ || !opt_.display) return;  // in a session everything goes to the MacBook
+    if (!code) { display_.pointer_motion(dx, dy); return; }
+    switch (display_.press(code, value)) {
+      case Display::Action::Restart: power("reboot", "Restarting\u2026"); break;
+      case Display::Action::ShutDown: power("poweroff", "Shutting down\u2026"); break;
+      case Display::Action::UseThunderbolt: switch_link(false); break;
+      case Display::Action::UseWifi: switch_link(true); break;
+      case Display::Action::None: break;
+    }
+  }
+
+  // Restart (into macOS, the firmware's default) or shut down. Nothing about the boot order is changed.
+  void power(const char* verb, const char* text) {
+    fprintf(stderr, "power: %s requested on the waiting screen\n", verb);
+    display_.show_busy(text);
+    pid_t pid;
+    const char* argv[] = {"systemctl", verb, nullptr};
+    if (posix_spawnp(&pid, "systemctl", nullptr, nullptr, (char* const*)argv, environ) != 0)
+      fprintf(stderr, "power: cannot run systemctl %s: %s\n", verb, strerror(errno));
+  }
+
+  // Thunderbolt (the product) or Wi-Fi (testing). Only between sessions; listens on the new link at once.
+  void switch_link(bool wifi) {
+    if (ctrl_) return;
+    std::string iface = wifi ? wifi_iface() : "thunderbolt0";
+    if (iface == opt_.iface) return;
+    fprintf(stderr, "net: switching the link from %s to %s\n", opt_.iface.c_str(), iface.c_str());
+    pending_.clear();
+    if (listen_fd_ >= 0) close(listen_fd_);
+    listen_fd_ = -1;
+    listen_err_.clear();
+    opt_.iface = iface;
+    storage_.set_iface(iface, is_wireless(iface));
+    mkdir("/var/lib/imacdisplayd", 0755);
+    if (FILE* f = fopen(kLinkFile, "w")) { fputs(wifi ? "wifi\n" : "thunderbolt\n", f); fclose(f); }
+    try_listen();
+    update_screen();
   }
 
   void accept_all() {
@@ -427,6 +496,8 @@ class Daemon {
     }
     else if (listen_fd_ >= 0 && iface_up()) st.state = Display::State::WaitingForMac;
     else st.state = Display::State::NoCable;
+    st.menu = !ctrl_;
+    st.wifi = is_wireless(opt_.iface);
     st.footer = footer();
     display_.show(st);
     if (!opt_.screenshot.empty()) {
@@ -466,6 +537,7 @@ class Daemon {
 
   void tick() {
     try_listen();
+    display_.idle_tick();
     video_took_screen();
     if (video_dec_ && !video_dec_->showing() && display_.paused() && restart_deadline_us_ &&
         now_us() > restart_deadline_us_) {
@@ -565,21 +637,29 @@ int main(int argc, char** argv) {
   Options o;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
-    if (a == "--iface" && i + 1 < argc) o.iface = argv[++i];
+    if (a == "--iface" && i + 1 < argc) { o.iface = argv[++i]; o.iface_given = true; }
     else if (a == "--port" && i + 1 < argc) o.port = std::stoi(argv[++i]);
     else if (a == "--storage-read-only") o.storage_read_only = true;
     else if (a == "--no-macos-share") o.share_macos = false;
     else if (a == "--no-display") o.display = false;
     else if (a == "--screenshot" && i + 1 < argc) o.screenshot = argv[++i];
+    else if (a == "--snapshots" && i + 1 < argc) o.snapshots = argv[++i];
     else {
       fprintf(stderr,
               "usage: imacdisplayd [--iface IFACE] [--port PORT]\n"
-              "  --iface  network interface to accept connections on (default thunderbolt0;\n"
-              "           anything else is for testing only)\n"
+              "  --iface  network interface to accept connections on (default: the link chosen on the\n"
+              "           waiting screen, thunderbolt0 or Wi-Fi; given here, the switch has no lasting effect)\n"
               "  --storage-read-only  mount USB drives read-only (testing)\n"
               "  --no-macos-share     do not offer the iMac's own macOS Data volume (read-only by default)\n"
               "  --no-display         leave the screen alone (testing next to a running receiver)\n");
       return 2;
+    }
+  }
+  if (!o.iface_given) {  // the link chosen on the waiting screen last time
+    if (FILE* f = fopen(kLinkFile, "r")) {
+      char buf[32] = "";
+      if (fgets(buf, sizeof buf, f) && !strncmp(buf, "wifi", 4)) o.iface = wifi_iface();
+      fclose(f);
     }
   }
   signal(SIGPIPE, SIG_IGN);

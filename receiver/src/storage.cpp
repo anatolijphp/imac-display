@@ -474,6 +474,7 @@ void Storage::write_samba_config() {
     << "  disable spoolss = yes\n"
     << "  fruit:model = iMac\n";
   for (auto& [id, v] : vols_) {
+    if (v.internal && wireless_) continue;  // the iMac's macOS: over the cable only
     f << "\n[" << v.share << "]\n"
       << "  comment = " << v.label << "\n"
       << "  path = " << v.share_path << "\n"
@@ -548,7 +549,8 @@ void Storage::session_started() {
   }
   ejected_usb_.clear();
   start_samba();
-  for (auto& [id, v] : vols_) announce(v);
+  for (auto& [id, v] : vols_)
+    if (!(v.internal && wireless_)) announce(v);
 }
 
 void Storage::session_ended() {

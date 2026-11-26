@@ -48,11 +48,28 @@ Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
     journalctl -u imacdisplayd -f        # what it is doing
     systemctl restart imacdisplayd
 
+## On the waiting screen (no Mac connected)
+
+The iMac's own mouse and keyboard work on the waiting screen (a hardware pointer appears when the
+mouse moves and goes away after 10 s without movement):
+
+- **Restart** and **Shut Down** (round buttons at the bottom, like the macOS login window), each with
+  a confirmation dialog (Esc or Cancel: nothing happens; Enter or the blue button: go; closes by itself
+  after 60 s). Restart starts macOS, the firmware's default; coming back needs Option at start-up and
+  "EFI Boot". Nothing about the boot order is touched (`systemctl reboot` / `poweroff`).
+  Keyboard only: Ctrl+Alt+Delete opens the Restart dialog.
+- **Thunderbolt / Wi-Fi** switch: the link the receiver accepts the MacBook on. Thunderbolt is the
+  product; Wi-Fi is for testing. Takes effect at once, is kept in `/var/lib/imacdisplayd/link` across
+  restarts, and is ignored when `--iface` is given in `/etc/imacdisplayd.conf`. Over Wi-Fi the iMac's own
+  macOS volume is never shared (USB drives are; Samba listens on the chosen link only).
+- While a Mac is connected none of this is shown, and all input goes to the MacBook.
+- Testing: `--snapshots DIR` saves every redraw as a PNG.
+
 ## Input
 
 - Only USB and Bluetooth devices are used (not the iMac's own power button and other ACPI events).
-- Devices are grabbed only while a MacBook session is active. Without a session the keyboard
-  works on the iMac console as usual; when the session ends or the receiver exits, they are released.
+- Devices are grabbed only while a MacBook session is active. Without a session they drive the waiting
+  screen (above); when the session ends or the receiver exits, they are released.
 - Keys go out as USB HID usages: page 0x07 for keyboard keys, page 0x0C for volume, mute, media
   and brightness keys. Key repeat is not forwarded (the MacBook repeats).
 - Pointer: relative counts, coalesced per evdev report. Wheel: 120 per notch (high-resolution wheels
