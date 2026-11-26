@@ -2,6 +2,9 @@
 
 #include <systemd/sd-bus.h>
 
+#include <spawn.h>
+#include <sys/wait.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -91,6 +94,10 @@ int Wifi::fd() const { return bus_ ? sd_bus_get_fd(bus_) : -1; }
 short Wifi::events() const { return bus_ ? short(sd_bus_get_events(bus_)) : 0; }
 
 void Wifi::process() {
+  if (reconfigure_pid_ > 0) {
+    int st;
+    if (waitpid(reconfigure_pid_, &st, WNOHANG) != 0) reconfigure_pid_ = 0;
+  }
   if (!bus_) return;
   while (sd_bus_process(bus_, nullptr) > 0) {}
 }
@@ -241,6 +248,15 @@ int Wifi::on_connected(sd_bus_message* m, void* self_, sd_bus_error*) {
     if (!self->passphrase_.empty() && en == "net.connman.iwd.Failed") self->password_needed_ = self->connecting_;
   } else {
     fprintf(stderr, "wifi: joined \"%s\"\n", name.c_str());
+    // systemd-networkd keeps the old network's address and DNS when iwd switches networks quickly (it
+    // sees no loss of carrier): "RRR free" was joined with Wifi-star's 192.168.1.117 and no internet.
+    // Reconfiguring the link makes it ask the new network (DHCP, router advertisements) afresh.
+    pid_t pid;
+    const char* argv[] = {"networkctl", "reconfigure", self->iface_.c_str(), nullptr};
+    if (self->reconfigure_pid_ <= 0 &&
+        posix_spawnp(&pid, "networkctl", nullptr, nullptr, (char* const*)argv, environ) == 0 &&
+        (self->reconfigure_pid_ = pid) > 0)
+      fprintf(stderr, "wifi: asked systemd-networkd for a fresh address on %s\n", self->iface_.c_str());
     self->status_.clear();
     self->password_needed_.clear();
   }

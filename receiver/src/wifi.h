@@ -69,4 +69,5 @@ class Wifi {
   bool scanning_ = false;
   std::string status_;
   std::string connecting_, passphrase_, password_needed_;
+  int reconfigure_pid_ = 0;  // networkctl after a join, collected in process()
 };
