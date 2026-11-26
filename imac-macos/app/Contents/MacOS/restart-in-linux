@@ -1,0 +1,127 @@
+#!/bin/bash
+# Restart in Linux.app: runs in macOS on the iMac and restarts it into the Linux that makes it
+# a display for the MacBook. Linux starts once; the restart after that brings macOS back.
+#
+# The work that needs root is in Resources/restart-in-linux-helper. This script asks, gets the
+# rights (the system's administrator dialog, or sudo once the helper is installed) and then
+# restarts the Mac the polite way, so that apps can still ask about unsaved documents.
+#
+# RIL_DRY_RUN=1 (for tests): changes nothing and restarts nothing. RIL_ANSWER=<button> answers
+# the question without showing it.
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+set -u
+
+TITLE="Restart in Linux"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+HELPER="$HERE/../Resources/restart-in-linux-helper"
+INSTALLED=/Library/PrivilegedHelperTools/local.imac-display.restart-in-linux
+LOG="$HOME/Library/Logs/Restart in Linux.log"
+DRY="${RIL_DRY_RUN:-}"
+
+ASK_ONCE="Restart"
+ASK_NEVER="Restart, Never Ask Again"
+
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG" 2>/dev/null; }
+
+# ask MESSAGE BUTTON...: shows the question, prints the button chosen. "Cancel" ends the app.
+ask() {
+    if [ -n "${RIL_ANSWER:-}" ]; then echo "$RIL_ANSWER"; return 0; fi
+    osascript - "$TITLE" "$@" 2>/dev/null <<'EOS'
+on run argv
+    set theButtons to items 3 thru -1 of argv
+    activate
+    set r to display dialog (item 2 of argv) with title (item 1 of argv) buttons theButtons default button (last item of theButtons)
+    return button returned of r
+end run
+EOS
+}
+
+problem() {
+    log "problem: $1"
+    if [ -n "$DRY" ]; then echo "problem: $1"; exit 1; fi
+    osascript - "$TITLE" "$1" >/dev/null 2>&1 <<'EOS'
+on run argv
+    activate
+    display dialog (item 2 of argv) with title (item 1 of argv) buttons {"OK"} default button "OK" with icon stop
+end run
+EOS
+    exit 1
+}
+
+# as_admin COMMAND ARG...: runs it as root after the system's administrator dialog.
+# Prints what the command printed; on failure prints its message and returns 1 (2 when cancelled).
+as_admin() {
+    local out
+    out="$(osascript - "$@" 2>&1 <<'EOS'
+on run argv
+    set cmd to ""
+    repeat with a in argv
+        set cmd to cmd & quoted form of (a as text) & " "
+    end repeat
+    do shell script cmd with prompt "Restart in Linux wants to choose the system this iMac starts next." with administrator privileges
+end run
+EOS
+)" && { echo "$out"; return 0; }
+    case "$out" in *"(-128)"*) return 2 ;; esac
+    # "NN:MM: execution error: the message (1)" -> the message
+    echo "$out" | sed -e 's/^.*execution error: //' -e 's/ ([-0-9]*)$//'
+    return 1
+}
+
+restart_now() {
+    if [ -n "$DRY" ]; then echo "would restart"; return 0; fi
+    log "restarting"
+    osascript -e 'tell application "System Events" to restart' >/dev/null 2>&1 && return 0
+    osascript -e 'tell application "loginwindow" to «event aevtrrst»' >/dev/null 2>&1 && return 0
+    log "could not restart by itself"
+    ask "Linux starts at the next restart.
+
+This app was not allowed to restart the iMac itself: choose Apple menu > Restart." "OK" >/dev/null
+}
+
+if [ -z "$DRY" ]; then
+    if [ "$(uname -m)" != x86_64 ] || [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
+        problem "This app is for the iMac: it restarts an Intel Mac into the Linux that the iMac Display installer put there. It does nothing on this Mac."
+    fi
+fi
+[ -x "$HELPER" ] || problem "The app is incomplete (its helper is missing). Copy the whole app again."
+
+"$HELPER" --find >/dev/null 2>&1 \
+    || problem "This Mac has no partition named LINUXBOOT, so there is no Linux to restart into. Install it with the iMac Display installer first."
+
+# Installed helper of this version, and sudo lets us run it without a password: no question, go.
+if [ -z "$DRY" ] && [ -x "$INSTALLED" ] && [ "$("$INSTALLED" --version 2>/dev/null)" = "$("$HELPER" --version)" ] \
+   && sudo -n -l "$INSTALLED" >/dev/null 2>&1; then
+    OUT="$(sudo -n "$INSTALLED" 2>&1)" || problem "$OUT"
+    log "$OUT"
+    restart_now
+    exit 0
+fi
+
+CHOICE="$(ask "Restart this iMac into Linux, as a display for your MacBook?
+
+Linux starts once. To come back to macOS, restart the iMac again.
+
+macOS asks for an administrator password for this. With \"$ASK_NEVER\" a small helper is installed, and from then on this app restarts the iMac straight away, without this question and without a password." "Cancel" "$ASK_NEVER" "$ASK_ONCE")" || exit 0
+
+case "$CHOICE" in
+    "$ASK_NEVER") set -- "$HELPER" --install "$(id -u)" ;;
+    "$ASK_ONCE")  set -- "$HELPER" ;;
+    *)            exit 0 ;;
+esac
+
+if [ -n "$DRY" ]; then
+    OUT="$(RIL_DRY_RUN=1 "$@" 2>&1)" || problem "$OUT"
+    echo "$OUT"
+else
+    OUT="$(as_admin "$@")"
+    case $? in
+        0) ;;
+        2) exit 0 ;;
+        *) problem "$OUT" ;;
+    esac
+fi
+log "$OUT"
+restart_now

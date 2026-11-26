@@ -1,0 +1,123 @@
+#!/bin/bash
+# Restart in Linux: the part that needs root.
+#
+# Finds the Linux boot partition made by imac-install (FAT, labelled LINUXBOOT, holding
+# systemd-boot) and tells the Mac's firmware to start from it ONCE (bless --nextonly).
+# macOS stays the default system: the restart after that one brings macOS back.
+# It does not restart the Mac; the app does that, so that open documents can still be saved.
+#
+#   restart-in-linux-helper              choose Linux for the next start (root)
+#   restart-in-linux-helper --install N  first install this helper so that user id N may run it
+#                                        with sudo without a password, then do the same (root)
+#   restart-in-linux-helper --find       print the partition, e.g. disk0s3 (no root needed)
+#   restart-in-linux-helper --version
+#
+# It takes no paths from the caller: what it starts is decided here, by label and content.
+# RIL_DRY_RUN=1 (for tests): changes nothing, prints the command instead.
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+set -u
+umask 022
+
+VERSION=1
+LABEL=LINUXBOOT
+LOADER=EFI/BOOT/BOOTX64.EFI
+MARKER=loader/loader.conf          # systemd-boot's settings: shows the partition is ours
+INSTALLED=/Library/PrivilegedHelperTools/local.imac-display.restart-in-linux
+SUDOERS=/etc/sudoers.d/imac-display-restart-in-linux   # no dot in the name: sudo skips such files
+DRY="${RIL_DRY_RUN:-}"
+
+fail() { echo "$*" >&2; exit 1; }
+
+TMP="$(mktemp -t restart-in-linux)" || fail "Cannot create a temporary file."
+trap 'rm -f "$TMP"' EXIT
+
+# info DEVICE KEY: one value from "diskutil info".
+info() {
+    diskutil info -plist "$1" > "$TMP" 2>/dev/null || return 1
+    /usr/libexec/PlistBuddy -c "Print :$2" "$TMP" 2>/dev/null
+}
+
+# Prints the partition labelled LINUXBOOT; one on an internal drive wins over an external one.
+find_partition() {
+    local d other=""
+    # Newer macOS wraps names in invisible characters in this list, so the list only
+    # nominates candidates; the name is then checked exactly.
+    for d in $(diskutil list 2>/dev/null | awk -v l="$LABEL" 'index($0, l) && $NF ~ /^disk[0-9]+s[0-9]+$/ { print $NF }'); do
+        [ "$(info "$d" VolumeName)" = "$LABEL" ] || continue
+        if [ "$(info "$d" Internal)" = true ]; then echo "$d"; return 0; fi
+        [ -n "$other" ] || other="$d"
+    done
+    [ -n "$other" ] && { echo "$other"; return 0; }
+    return 1
+}
+
+install_self() {
+    local uid="$1" rule
+    case "$uid" in ''|*[!0-9]*) fail "Internal error: bad user id." ;; esac
+    grep -Eq '^[#@]includedir[[:space:]]+/(private/)?etc/sudoers\.d' /etc/sudoers 2>/dev/null \
+        || { echo "note: this macOS does not read /etc/sudoers.d; the password stays needed" >&2; return 1; }
+    if [ -n "$DRY" ]; then echo "would install: $INSTALLED and $SUDOERS for user id $uid"; return 0; fi
+    mkdir -p /Library/PrivilegedHelperTools /etc/sudoers.d || return 1
+    install -o root -g wheel -m 755 "$0" "$INSTALLED" || return 1
+    xattr -c "$INSTALLED" 2>/dev/null
+    rule="$(mktemp -t restart-in-linux-rule)" || return 1
+    {
+        echo "# Installed by \"Restart in Linux.app\" (iMac Display). Lets this one user run this one"
+        echo "# root-owned script, without arguments, without a password. Remove this file to undo."
+        echo "#$uid ALL=(root) NOPASSWD: $INSTALLED \"\""
+    } > "$rule"
+    # A sudoers file with a mistake in it would break sudo altogether: check before installing.
+    if visudo -cf "$rule" >/dev/null 2>&1; then
+        install -o root -g wheel -m 440 "$rule" "$SUDOERS"
+    else
+        rm -f "$rule"; echo "note: the sudo rule did not pass visudo's check; not installed" >&2; return 1
+    fi
+    rm -f "$rule"
+}
+
+case "${1:-}" in
+    --version) echo "$VERSION"; exit 0 ;;
+    --find)    find_partition || fail "No partition named $LABEL was found."; exit 0 ;;
+    --install) [ $# -eq 2 ] || fail "usage: $0 --install USER-ID" ;;
+    '')        ;;
+    *)         fail "usage: $0 [--install USER-ID | --find | --version]" ;;
+esac
+
+if [ -z "$DRY" ]; then
+    [ "$(id -u)" = 0 ] || fail "This must run as root."
+    [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" != 1 ] \
+        || fail "This is for an Intel Mac. An Apple silicon Mac cannot start this Linux."
+fi
+
+# The helper is installed first, so that a later problem with the partition does not lose the choice.
+[ "${1:-}" = --install ] && install_self "$2"
+
+DEV="$(find_partition)" || fail "No partition named $LABEL was found. Linux is installed with the iMac Display installer (imac-install)."
+
+MOUNTED_HERE=""
+MNT="$(info "$DEV" MountPoint)"
+if [ -z "$MNT" ]; then
+    diskutil mount readOnly "$DEV" >/dev/null 2>&1 || fail "Cannot open the partition $LABEL ($DEV)."
+    MOUNTED_HERE=1
+    MNT="$(info "$DEV" MountPoint)"
+    [ -n "$MNT" ] || fail "Cannot open the partition $LABEL ($DEV)."
+fi
+finish() { [ -n "$MOUNTED_HERE" ] && diskutil unmount "$DEV" >/dev/null 2>&1; rm -f "$TMP"; }
+trap finish EXIT
+
+[ -f "$MNT/$LOADER" ] && [ -f "$MNT/$MARKER" ] \
+    || fail "The partition $LABEL ($DEV) does not hold the Linux boot loader ($LOADER). Install Linux again with imac-install."
+
+if [ -n "$DRY" ]; then
+    echo "would run: bless --mount $MNT --file $MNT/$LOADER --setBoot --nextonly --shortform"
+    exit 0
+fi
+
+# --nextonly: for the next start only. --shortform: the short kind of firmware path, which
+# Apple's firmware finds without a search; if this bless does not know it, try without.
+ERR="$(bless --mount "$MNT" --file "$MNT/$LOADER" --setBoot --nextonly --shortform 2>&1)" \
+    || ERR="$(bless --mount "$MNT" --file "$MNT/$LOADER" --setBoot --nextonly 2>&1)" \
+    || fail "macOS refused to change the startup system: $ERR"
+echo "Linux ($DEV) starts at the next restart."

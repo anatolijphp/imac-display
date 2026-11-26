@@ -48,6 +48,8 @@ For a text console on the iMac (to join Wi-Fi with `iwctl station wlan0 connect 
 
 Developing on the iMac with Claude Code: build the installer with `WITH_CLAUDE=1`, then `cd /root/imac-display && claude` and `follow docs/IMAC-BUILD.md`.
 
+Without holding Option: put **Restart in Linux** (`imac-macos/README.md`) in the Applications folder of the iMac's macOS. Launching it restarts the iMac into Linux once.
+
 ## Going back
 
 - **To macOS:** restart without holding Option.
