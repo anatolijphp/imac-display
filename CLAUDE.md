@@ -4,8 +4,8 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 ## Which machine am I on?
 
-- **On the iMac** (Linux, hostname `imac-display`; `imac-installer` while booted from the USB stick): you are the iMac session. Follow `docs/IMAC-BUILD.md` from the top.
-- **On the MacBook** (macOS, Apple Silicon): you are the MacBook session. You own the Mac app and the protocol.
+- **On the MacBook** (macOS, Apple Silicon): since 2026-11-27 this is the only session, and it owns everything. It works on the iMac itself over SSH (`ssh root@imac-display.local`, the iMac's copy of this repo is `/root/imac-display`): edits here, pushes to the iMac's `macbook` branch, merges there (`git merge --ff-only macbook`), builds the receiver there (`receiver/README.md`) and installs it. The user decided this: no second session, no relaying, no handoff notes.
+- **On the iMac** (Linux, hostname `imac-display`): there is no separate session any more. `docs/IMAC-BUILD.md` and `docs/handoff.md` are history from when there was one.
 
 ## Decisions already made (do not reopen without the user)
 
@@ -29,11 +29,12 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 | Path | Owner |
 |---|---|
-| `receiver/`, `linux/` (except `linux/iso/`), `docs/hardware-validation.md` | iMac session |
-| `mac/`, `imac-macos/`, `PROTOCOL.md`, `tools/`, `linux/iso/` | MacBook session |
-| `docs/handoff.md` | both: notes, questions and change requests for the other side |
+| Everything | the one session on the MacBook |
+| `docs/handoff.md` | closed; kept as the record of the two-session time |
 
-`PROTOCOL.md` is the contract between the two halves. Only the MacBook session edits it. The iMac session asks for changes in `docs/handoff.md`.
+`PROTOCOL.md` is the contract between the two halves (the MacBook app and `imacdisplayd`).
+
+Working on the running iMac: the user is usually looking at that screen. Stopping `imacdisplayd` drops their picture, so do it rarely, say so, and put it back. Before rebuilding the boot image (`mkinitcpio -P`), keep the previous one (`/boot/initramfs-linux-prev.img`).
 
 ## Working rules
 

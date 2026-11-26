@@ -298,7 +298,7 @@ BASE_OPTS="root=UUID=$ROOT_UUID rw fbcon=font:TER16x32"
 mkdir -p "$T/boot/loader/entries"
 cat > "$T/boot/loader/loader.conf" <<'EOF'
 default imac-display.conf
-timeout 3
+timeout 0
 editor  yes
 EOF
 write_entry() {  # file, title, options
@@ -344,7 +344,7 @@ if [ "$RECEIVER" = 1 ]; then cat <<'EOF'
   4. The iMac shows "Waiting for your Mac". Connect the Thunderbolt cable and start
      iMac Display on the MacBook.
 
-  For a text console on the iMac: in the boot menu that appears for 3 seconds after
+  For a text console on the iMac: in the boot menu (hold Space while the iMac starts; it is hidden otherwise) after
   "EFI Boot", choose "console only (receiver off)".
 
 EOF

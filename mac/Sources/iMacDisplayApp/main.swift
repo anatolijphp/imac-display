@@ -197,7 +197,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
 
         if connected, let s = session {
             info("Connected to the iMac over " + (overThunderbolt ? "Thunderbolt" : "Wi-Fi (testing)"))
-            if useDisplay { info("Display: \(s.desktopWidth) × \(s.desktopHeight), \(stats.decoded) pictures per second") }
+            // Only changed pictures are sent: with a still screen the rate is 0, which would read like a fault.
+            if useDisplay { info("Display: \(s.desktopWidth) × \(s.desktopHeight)" + (stats.decoded > 0 ? ", \(stats.decoded) pictures per second" : "")) }
             if useSound {
                 switch s.soundSource {
                 case .speakersDevice: info("Sound: on “iMac Speakers”")

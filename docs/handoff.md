@@ -1,5 +1,7 @@
 # Handoff notes
 
+**Closed on 2026-11-27.** The user ended the two-session arrangement: one session on the MacBook now does both sides, the iMac over SSH. Nothing new is written here; what follows is the record.
+
 Shared by the two Claude sessions. Newest entry at the top. Each entry: date, which side wrote it, and what the other side needs to know or do. Requests to change `PROTOCOL.md` go here.
 
 ---

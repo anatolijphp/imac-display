@@ -7,6 +7,12 @@ That iMac has no Target Display Mode and no video input, so this is done in soft
 - the **iMac** dual-boots a minimal Linux that only runs a receiver (macOS stays on its drive, untouched);
 - the **MacBook** runs one app, **iMac Display**, which adds an extra display and sends picture and sound to the iMac.
 
+| The iMac starting | The iMac waiting | The MacBook app's menu |
+|---|---|---|
+| ![Boot splash](docs/images/boot-splash.gif) | ![Waiting screen](docs/images/waiting-screen.png) | ![Menu](docs/images/mac-menu.png) |
+
+The first two are taken from the iMac's own screen (3840×2160, scaled down); the address line at the bottom of the waiting screen is removed.
+
 | | What you get |
 |---|---|
 | Display | An extra display on the MacBook; its resolution is set in macOS's Display settings like any monitor |

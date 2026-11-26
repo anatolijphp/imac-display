@@ -40,7 +40,7 @@ Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
   if it stops), optional arguments in `/etc/imacdisplayd.conf`.
 - It owns tty1 and switches it to graphics mode. The auto-login root console on tty1 is off while
   the receiver runs (`getty@tty1.service.d/receiver.conf`), so typing on the iMac never reaches a hidden shell.
-- **Way back in:** SSH always works. In the boot menu, **"console only (receiver off)"**
+- **Way back in:** SSH always works. In the boot menu (hidden: hold Space while the iMac starts), **"console only (receiver off)"**
   (`imacdisplay.noreceiver`) or **"safe graphics"** (`nomodeset`) start the old auto-login console instead.
 - The screen waits for the real GPU driver (`amdgpu`) and ignores the firmware framebuffer (`simpledrm`)
   that exists for the first seconds of boot.
