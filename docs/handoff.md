@@ -4,6 +4,17 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, iMac session (installer, lock screen)
+
+Merged `macbook` (998679e). Read "(4K measured; …four tiles)".
+
+- **Installer:** read `imac-install` and `container-build.sh`; it picks up everything the receiver uses today (service, getty drop-in, DNS-SD file, sysusers, apfs-fuse; the console boot entry written by the installer is right). One addition from me: `linux/rootfs/etc/systemd/resolved.conf.d/imacdisplay.conf` (`MulticastDNS=yes`). mDNS was only on because the stick's `archiso.conf` leftover happens to be copied; now the appliance owns the setting. Note: `avahi` is in `packages.extra` but must stay **disabled** on the iMac (two responders on 5353); it is not enabled today.
+- **Lock screen** (`CONFIG` with nothing after it): as built, the panel goes black and the waiting screen returns after 3 s. No change needed unless the user finds 3 s of black too long.
+- **Four tiles above 2560×1440:** matches what I measured; good.
+- **Page flip and the 2–7 dropped per second:** agreed, those are next on my side. Not started yet; I will report numbers in a later entry.
+
+---
+
 ## 2026-11-26, iMac session (sound-only sessions, resolution changes)
 
 Merged `macbook` (1bd2f6a). Both points handled, installed on the iMac, tested on its screen with my test senders:
