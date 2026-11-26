@@ -1,0 +1,388 @@
+
+===== system =====
+Thu Nov 26 13:00:22 UTC 2026
+Linux imac-display 7.3.6-arch1-1 #1 SMP PREEMPT_DYNAMIC Tue, 24 Nov 2026 04:08:01 +0000 x86_64 GNU/Linux
+initrd=\initramfs-linux.img root=UUID=f40e8017-9450-486e-a1c9-90e3e3c9e133 rw fbcon=font:TER16x32 amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0
+model: iMac17,1 / 1.0
+firmware: 529.120.1.0.0
+
+===== cpu and memory =====
+CPU(s):                                  8
+Model name:                              Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      4
+CPU(s) scaling MHz:                      52%
+               total        used        free      shared  buff/cache   available
+Mem:            31Gi       899Mi        30Gi       1.5Mi       443Mi        30Gi
+Swap:             0B          0B          0B
+
+===== pci devices and drivers =====
+00:00.0 Host bridge [0600]: Intel Corporation Xeon E3-1200 v5/E3-1500 v5/6th Gen Core Processor Host Bridge/DRAM Registers [8086:191f] (rev 07)
+	DeviceName: SATA
+	Subsystem: Apple Inc. Device [106b:0150]
+	Kernel driver in use: skl_uncore
+	Kernel modules: ie31200_edac
+00:01.0 PCI bridge [0604]: Intel Corporation 6th-10th Gen Core Processor PCIe Controller (x16) [8086:1901] (rev 07)
+	Subsystem: Apple Inc. Device [106b:0150]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+00:14.0 USB controller [0c03]: Intel Corporation 100/C230 Series Chipset Family USB 3.0 xHCI Controller [8086:a12f] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: xhci_hcd
+	Kernel modules: xhci_pci
+00:16.0 Communication controller [0780]: Intel Corporation 100/C230 Series Chipset Family MEI #1 [8086:a13a] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: mei_me
+	Kernel modules: mei_me
+00:17.0 SATA controller [0106]: Intel Corporation Q170/Q150/B150/H170/H110/Z170/CM236 Chipset SATA Controller [AHCI Mode] [8086:a102] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: ahci
+	Kernel modules: ahci
+00:1c.0 PCI bridge [0604]: Intel Corporation 100/C230 Series Chipset Family PCIe Root Port #1 [8086:a110] (rev f1)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+00:1c.1 PCI bridge [0604]: Intel Corporation 100/C230 Series Chipset Family PCIe Root Port #2 [8086:a111] (rev f1)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+00:1c.4 PCI bridge [0604]: Intel Corporation 100/C230 Series Chipset Family PCIe Root Port #5 [8086:a114] (rev f1)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+00:1f.0 ISA bridge [0601]: Intel Corporation Z170 Chipset LPC/eSPI Controller [8086:a145] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+00:1f.2 Memory controller [0580]: Intel Corporation 100/C230 Series Chipset Family PMC [8086:a121] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+00:1f.3 Audio device [0403]: Intel Corporation 100/C230 Series Chipset Family HD Audio [8086:a170] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_soc_avs, snd_hda_intel
+00:1f.4 SMBus [0c05]: Intel Corporation 100/C230 Series Chipset Family SMBus [8086:a123] (rev 31)
+	Subsystem: Intel Corporation Device [8086:7270]
+	Kernel driver in use: i801_smbus
+	Kernel modules: i2c_i801
+01:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Saturn XT [FirePro M6100] [1002:6640] (rev 80)
+	Subsystem: Apple Inc. Tropo XT [Radeon R9 M380 Mac Edition] [106b:014b]
+	Kernel driver in use: amdgpu
+	Kernel modules: radeon, amdgpu
+01:00.1 Audio device [0403]: Advanced Micro Devices, Inc. [AMD/ATI] Tobago HDMI Audio [Radeon R7 360 / R9 360 OEM] [1002:aac0]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+02:00.0 Network controller [0280]: Broadcom Inc. and subsidiaries BCM43602 802.11ac Wireless LAN SoC [14e4:43ba] (rev 01)
+	Subsystem: Apple Inc. Device [106b:014a]
+	Kernel driver in use: brcmfmac
+	Kernel modules: brcmfmac, wl
+03:00.0 Ethernet controller [0200]: Broadcom Inc. and subsidiaries NetXtreme BCM57766 Gigabit Ethernet PCIe [14e4:1686] (rev 01)
+	Subsystem: Broadcom Inc. and subsidiaries NetXtreme BCM57766 Gigabit Ethernet PCIe [14e4:1686]
+	Kernel driver in use: tg3
+	Kernel modules: tg3
+03:00.1 SD Host controller [0805]: Broadcom Inc. and subsidiaries BCM57765/57785 SDXC/MMC Card Reader [14e4:16bc] (rev 01)
+	Subsystem: Broadcom Inc. and subsidiaries Device [14e4:0000]
+	Kernel driver in use: sdhci-pci
+	Kernel modules: sdhci_pci
+04:00.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+05:00.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+05:03.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+05:04.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+05:05.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+05:06.0 PCI bridge [0604]: Intel Corporation DSL5520 Thunderbolt 2 Bridge [Falcon Ridge 4C 2013] [8086:156d]
+	Kernel driver in use: pcieport
+	Kernel modules: shpchp
+06:00.0 System peripheral [0880]: Intel Corporation DSL5520 Thunderbolt 2 NHI [Falcon Ridge 4C 2013] [8086:156c]
+	Kernel driver in use: thunderbolt
+	Kernel modules: thunderbolt
+
+===== displays (drm connectors) =====
+/sys/class/drm/card1-DP-1: status=disconnected enabled=disabled
+/sys/class/drm/card1-DP-2: status=disconnected enabled=disabled
+/sys/class/drm/card1-DP-3: status=disconnected enabled=disabled
+/sys/class/drm/card1-eDP-1: status=connected enabled=enabled
+    3840x2160
+    3200x1800
+    2560x1440
+    1920x1200
+    1920x1080
+    1600x1200
+console framebuffer: 3840,2160
+backlight: acpi_video0
+
+===== graphics driver messages =====
+[    0.000000] Command line: initrd=\initramfs-linux.img root=UUID=f40e8017-9450-486e-a1c9-90e3e3c9e133 rw fbcon=font:TER16x32 amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0
+[    0.062144] Kernel command line: initrd=\initramfs-linux.img root=UUID=f40e8017-9450-486e-a1c9-90e3e3c9e133 rw fbcon=font:TER16x32 amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0
+[    0.307690] simple-framebuffer simple-framebuffer.0: [drm] Registered 1 planes with drm panic
+[    0.307700] [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0
+[    0.329250] simple-framebuffer simple-framebuffer.0: [drm] fb0: simpledrmdrmfb frame buffer device
+[    1.438629] [drm] radeon kernel modesetting enabled.
+[    1.438664] radeon 0000:01:00.0: CIK support disabled by module param
+[    5.825134] amdgpu: Virtual CRAT table created for CPU
+[    5.825146] amdgpu: Topology: Add CPU node
+[    5.825193] amdgpu 0000:01:00.0: CIK support provided by amdgpu.
+               Use radeon.cik_support=1 amdgpu.cik_support=0 to override.
+[    5.825250] amdgpu 0000:01:00.0: initializing kernel modesetting (BONAIRE 0x1002:0x6640 0x106B:0x014B 0x80).
+[    5.825260] amdgpu 0000:01:00.0: register mmio base: 0x92500000
+[    5.825262] amdgpu 0000:01:00.0: register mmio size: 262144
+[    5.825329] amdgpu 0000:01:00.0: detected ip block number 0 <common_v1_0_0> (cik_common)
+[    5.825332] amdgpu 0000:01:00.0: detected ip block number 1 <gmc_v7_0_0> (gmc_v7_0)
+[    5.825333] amdgpu 0000:01:00.0: detected ip block number 2 <ih_v2_0_0> (cik_ih)
+[    5.825335] amdgpu 0000:01:00.0: detected ip block number 3 <gfx_v7_2_0> (gfx_v7_0)
+[    5.825337] amdgpu 0000:01:00.0: detected ip block number 4 <sdma_v2_0_0> (cik_sdma)
+[    5.825338] amdgpu 0000:01:00.0: detected ip block number 5 <smu_v1_0_0> (powerplay)
+[    5.825339] amdgpu 0000:01:00.0: detected ip block number 6 <dce_v1_0_0> (dm)
+[    5.825341] amdgpu 0000:01:00.0: detected ip block number 7 <uvd_v4_2_0> (uvd_v4_2)
+[    5.825342] amdgpu 0000:01:00.0: detected ip block number 8 <vce_v2_0_0> (vce_v2_0)
+[    5.825355] amdgpu 0000:01:00.0: Fetched VBIOS from VFCT
+[    5.825359] amdgpu 0000:01:00.0: [drm] ATOM BIOS: 113-C6005T-009, build: 323656  , ver: 015.049.000.003.000000, 2015/06/26
+[    5.825491] amdgpu 0000:01:00.0: disabling MCLK DPM on quirky ASIC
+[    5.825901] amdgpu 0000:01:00.0: Found VCE firmware Version: 50.10 Binary ID: 2
+[    5.850619] amdgpu 0000:01:00.0: vgaarb: deactivate vga console
+[    5.850623] amdgpu 0000:01:00.0: Trusted Memory Zone (TMZ) feature not supported
+[    5.850678] amdgpu 0000:01:00.0: [drm] PCIE gen 3 link speeds already enabled
+[    5.850707] amdgpu 0000:01:00.0: vm size is 128 GB, 2 levels, block size is 10-bit, fragment size is 9-bit
+[    5.850941] amdgpu 0000:01:00.0: VRAM: 2048M 0x000000F400000000 - 0x000000F47FFFFFFF (2048M used)
+[    5.850944] amdgpu 0000:01:00.0: GART: 1024M 0x000000FF00000000 - 0x000000FF3FFFFFFF
+[    5.850949] amdgpu 0000:01:00.0: [drm] Detected VRAM RAM=2048M, BAR=256M
+[    5.850951] amdgpu 0000:01:00.0: [drm] RAM width 128bits GDDR5
+[    5.851220] amdgpu 0000:01:00.0:  2048M of VRAM memory ready
+[    5.851223] amdgpu 0000:01:00.0:  15991M of GTT memory ready.
+[    5.851236] amdgpu 0000:01:00.0: [drm] GART: num cpu pages 262144, num gpu pages 262144
+[    5.852018] amdgpu 0000:01:00.0: [drm] PCIE GART of 1024M enabled (table at 0x000000F402000000).
+[    5.852690] amdgpu: hwmgr_sw_init smu backed is ci_smu
+[    5.853692] amdgpu 0000:01:00.0: [drm] Found UVD firmware Version: 1.64 Family ID: 9
+[    5.863427] amdgpu 0000:01:00.0: [drm] Display Core v3.2.392 initialized on DCE 8.0
+[    6.472204] amdgpu 0000:01:00.0: [drm] UVD initialized successfully.
+[    6.592241] amdgpu 0000:01:00.0: [drm] VCE initialized successfully.
+[    6.592742] amdgpu 0000:01:00.0: SE 2, SH per SE 1, CU per SH 7, active_cu_number 12
+[    7.093935] amdgpu 0000:01:00.0: Runtime PM not available
+[    7.094566] amdgpu 0000:01:00.0: [drm] Skipping amdgpu DM backlight registration
+[    7.098028] amdgpu 0000:01:00.0: [drm] Registered 6 planes with drm panic
+[    7.102665] [drm] Initialized amdgpu 3.64.0 for 0000:01:00.0 on minor 1
+[    7.110230] fbcon: amdgpudrmfb (fb0) is primary device
+[    7.746763] amdgpu 0000:01:00.0: [drm] fb0: amdgpudrmfb frame buffer device
+[   12.212753] snd_hda_intel 0000:01:00.1: bound 0000:01:00.0 (ops amdgpu_dm_audio_component_bind_ops [amdgpu])
+
+===== video decode (vainfo per render node) =====
+-- /dev/dri/renderD128
+Trying display: drm
+vainfo: VA-API version: 1.24 (libva 2.24.0)
+vainfo: Driver version: Mesa Gallium driver 26.3.1-arch1.3 for AMD Radeon R9 M380 (radeonsi, bonaire, ACO, DRM 3.64, 7.3.6-arch1-1)
+vainfo: Supported profile and entrypoints
+      VAProfileMPEG2Simple            :	VAEntrypointVLD
+      VAProfileMPEG2Main              :	VAEntrypointVLD
+      VAProfileVC1Simple              :	VAEntrypointVLD
+      VAProfileVC1Main                :	VAEntrypointVLD
+      VAProfileVC1Advanced            :	VAEntrypointVLD
+      VAProfileH264ConstrainedBaseline:	VAEntrypointVLD
+      VAProfileH264ConstrainedBaseline:	VAEntrypointEncSlice
+      VAProfileH264Main               :	VAEntrypointVLD
+      VAProfileH264Main               :	VAEntrypointEncSlice
+      VAProfileH264High               :	VAEntrypointVLD
+      VAProfileH264High               :	VAEntrypointEncSlice
+      VAProfileNone                   :	VAEntrypointVideoProc
+
+===== thunderbolt =====
+thunderbolt_net        53248  0
+thunderbolt           618496  1 thunderbolt_net
+/sys/bus/thunderbolt/devices/0-0: Apple Inc. Macintosh
+/sys/bus/thunderbolt/devices/domain0:  
+[    8.839616] ACPI: bus type thunderbolt registered
+[    8.840040] thunderbolt 0000:06:00.0: device link creation from 0000:05:00.0 failed
+
+===== network =====
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+enp3s0f0         DOWN           38:c9:86:0d:67:de <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+wlan0            UP             28:f0:76:12:d9:e6 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+enp3s0f0         DOWN           
+wlan0            UP             192.168.1.117/24 metric 600 fd5c:a9d9:61eb:10:c0ce:5112:d93e:3a4f/64 fd5c:a9d9:61eb:10:2af0:76ff:fe12:d9e6/64 2a0d:3344:7942:4910:c6f6:8055:1f8d:60a1/64 2a0d:3344:7942:4910:2af0:76ff:fe12:d9e6/64 fe80::2af0:76ff:fe12:d9e6/64 
+IDX LINK     TYPE     OPERATIONAL SETUP
+  1 lo       loopback carrier     unmanaged
+  2 enp3s0f0 ether    no-carrier  configuring
+  3 wlan0    wlan     routable    configured
+
+3 links listed.
+
+===== wifi and bluetooth =====
+02:00.0 Network controller [0280]: Broadcom Inc. and subsidiaries BCM43602 802.11ac Wireless LAN SoC [14e4:43ba] (rev 01)
+03:00.0 Ethernet controller [0200]: Broadcom Inc. and subsidiaries NetXtreme BCM57766 Gigabit Ethernet PCIe [14e4:1686] (rev 01)
+03:00.1 SD Host controller [0805]: Broadcom Inc. and subsidiaries BCM57765/57785 SDXC/MMC Card Reader [14e4:16bc] (rev 01)
+brcmfmac_wcc           12288  0
+btusb                  86016  0
+brcmfmac              614400  1 brcmfmac_wcc
+brcmutil               24576  1 brcmfmac
+cfg80211             1642496  1 brcmfmac
+phy#0
+	Interface wlan0
+		ifindex 3
+		wdev 0x1
+		addr 28:f0:76:12:d9:e6
+		ssid Wifi-star
+		type managed
+		channel 44 (5220 MHz), width: 40 MHz, center1: 5230 MHz
+		txpower 31.00 dBm
+Bus 001 Device 005: ID 05ac:8294 Apple, Inc. Bluetooth USB Host Controller
+
+===== audio =====
+**** List of PLAYBACK Hardware Devices ****
+card 0: PCH [HDA Intel PCH], device 0: CS4206 Analog [CS4206 Analog]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 0: PCH [HDA Intel PCH], device 1: CS4206 Digital [CS4206 Digital]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 3: HDMI 0 [HDMI 0]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 7: HDMI 1 [HDMI 1]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 8: HDMI 2 [HDMI 2]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 9: HDMI 3 [HDMI 3]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 10: HDMI 4 [HDMI 4]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 11: HDMI 5 [HDMI 5]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+card 1: HDMI [HDA ATI HDMI], device 12: HDMI 6 [HDMI 6]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+**** List of CAPTURE Hardware Devices ****
+card 0: PCH [HDA Intel PCH], device 0: CS4206 Analog [CS4206 Analog]
+  Subdevices: 1/1
+  Subdevice #0: subdevice #0
+-- /proc/asound/card0/codec#0
+Codec: Cirrus Logic CS4206
+Address: 0
+AFG Function Id: 0x1 (unsol 0)
+Vendor Id: 0x10134206
+Subsystem Id: 0x106b8200
+Revision Id: 0x100302
+No Modem Function Group found
+Default PCM:
+    rates [0x7f0]: 32000 44100 48000 88200 96000 176400 192000
+    bits [0x1e]: 16 20 24 32
+    formats [0x3]: PCM FLOAT
+Default Amp-In caps: N/A
+-- /proc/asound/card1/codec#0
+Codec: ATI R6xx HDMI
+Address: 0
+AFG Function Id: 0x1 (unsol 0)
+Vendor Id: 0x1002aa01
+Subsystem Id: 0x00aa0100
+Revision Id: 0x100500
+No Modem Function Group found
+Default PCM:
+    rates [0x70]: 32000 44100 48000
+    bits [0x2]: 16
+    formats [0x1]: PCM
+Default Amp-In caps: N/A
+[   12.145908] snd_hda_intel 0000:01:00.1: enabling device (0000 -> 0002)
+[   12.145976] snd_hda_intel 0000:01:00.1: Force to non-snoop mode
+[   12.210812] snd_hda_codec_cs420x hdaudioC0D0: CS4206: picked fixup  for codec SSID 106b:0000
+[   12.211544] snd_hda_codec_cs420x hdaudioC0D0: autoconfig for CS4206: line_outs=1 (0xb/0x0/0x0/0x0/0x0) type:speaker
+[   12.211548] snd_hda_codec_cs420x hdaudioC0D0:    speaker_outs=0 (0x0/0x0/0x0/0x0/0x0)
+[   12.211549] snd_hda_codec_cs420x hdaudioC0D0:    hp_outs=1 (0xa/0x0/0x0/0x0/0x0)
+[   12.211551] snd_hda_codec_cs420x hdaudioC0D0:    mono: mono_out=0x0
+[   12.211552] snd_hda_codec_cs420x hdaudioC0D0:    dig-out=0x10/0x0
+[   12.211554] snd_hda_codec_cs420x hdaudioC0D0:    inputs:
+[   12.211555] snd_hda_codec_cs420x hdaudioC0D0:      Mic=0xe
+[   12.212753] snd_hda_intel 0000:01:00.1: bound 0000:01:00.0 (ops amdgpu_dm_audio_component_bind_ops [amdgpu])
+
+===== storage (read-only inspection) =====
+NAME     SIZE TYPE TRAN ROTA FSTYPE LABEL     MODEL
+sda    465.8G disk sata    0                  CT500BX500SSD1
+├─sda1   200M part         0 vfat   EFI       
+├─sda2 371.5G part         0 apfs             
+├─sda3   954M part         0 vfat   LINUXBOOT 
+└─sda4  93.1G part         0 ext4   LINUX     
+-- /dev/sda
+    Device Model:     CT500BX500SSD1
+    User Capacity:    500,107,862,016 bytes [500 GB]
+    Rotation Rate:    Solid State Device
+    Form Factor:      2.5 inches
+    SATA Version is:  SATA 3.3, 6.0 Gb/s (current: 6.0 Gb/s)
+
+===== usb devices =====
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 25a7:fa61 Areson Technology Corp Elecom Co., Ltd MR-K013 Multicard Reader
+Bus 001 Device 003: ID 04f3:152e Elan Microelectronics Corp. Gaming KB
+Bus 001 Device 004: ID 05ac:8511 Apple, Inc. FaceTime HD Camera (Built-in)
+Bus 001 Device 005: ID 05ac:8294 Apple, Inc. Bluetooth USB Host Controller
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+
+===== temperatures and fans =====
+coretemp-isa-0000
+Adapter: ISA adapter
+Package id 0:  +44.0°C  (high = +80.0°C, crit = +100.0°C)
+Core 0:        +42.0°C  (high = +80.0°C, crit = +100.0°C)
+Core 1:        +44.0°C  (high = +80.0°C, crit = +100.0°C)
+Core 2:        +41.0°C  (high = +80.0°C, crit = +100.0°C)
+Core 3:        +42.0°C  (high = +80.0°C, crit = +100.0°C)
+
+amdgpu-pci-0100
+Adapter: PCI adapter
+vddgfx:      956.00 mV 
+edge:         +47.0°C  (crit = +104.0°C, hyst = -273.1°C)
+PPT:           5.91 W  (cap =  80.00 W)
+sclk:         318 MHz 
+mclk:           2 GHz 
+
+applesmc-isa-0300
+Adapter: ISA adapter
+Main :       1202 RPM  (min = 1200 RPM, max = 2881 RPM)
+TA0P:         +16.5°C  
+TA0V:         +27.2°C  
+TA0p:         +36.5°C  
+TC0E:         -56.5°C  
+TC0F:         -55.2°C  
+TC0J:          +1.2°C  
+TC0P:         +43.5°C  
+TC0T:          -0.2°C  
+TC0c:         +41.0°C  
+TC0p:         +43.5°C  
+TC1c:         +42.0°C  
+TC2c:         +40.0°C  
+TC3c:         +42.0°C  
+TCGc:         +43.0°C  
+TCSc:         +42.0°C  
+TCXR:         -56.5°C  
+TCXc:         +43.5°C  
+TCXr:         -56.5°C  
+TG0D:         +47.0°C  
+TG0E:         +47.2°C  
+TG0F:         +47.2°C  
+TG0J:          +0.0°C  
+TG0P:         +44.2°C  
+TG0T:          +0.0°C  
+TG0d:         +47.0°C  
+TG0p:         +44.2°C  
+TG1P:         +43.8°C  
+TG1d:         +44.0°C  
+TG1p:         +43.8°C  
+TG2P:         +44.0°C  
+TG2p:         +44.0°C  
+TG3P:         +46.0°C  
+TG3p:         +46.0°C  
+TH0A:        -127.0°C  
+TH0B:        -127.0°C  
+TH0C:        -127.0°C  
+TH0F:        -127.0°C  
+TH0O:          +9.0°C  
+TH0P:        -127.0°C  
+TH0R:        -127.0°C  
+TH0a:         +35.0°C  
