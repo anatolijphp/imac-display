@@ -128,19 +128,38 @@ mkfs.ext4 -q -F -L "$ROOT_LABEL" "$ROOT_DEV"
 
 # Mark the partitions as "EFI System" and "Linux filesystem". Without this macOS
 # shows a "disk not readable, initialise?" dialog for the Linux partition at login.
-set_type() {
-  local dev="$1" guid="$2" disk partn
-  disk="/dev/$(lsblk -ndo PKNAME "$dev")"
-  partn="$(lsblk -ndo PARTN "$dev" 2>/dev/null || true)"
-  if [ -n "$partn" ] && sfdisk --part-type "$disk" "$partn" "$guid" >/dev/null 2>&1; then
-    say "partition type of $dev set"
-  else
-    say "WARNING: could not set the partition type of $dev (the install still works; macOS may offer to initialise the partition: always choose Ignore)"
-  fi
+# Changing one partition's type makes the kernel re-read the whole table, and the
+# device nodes disappear for a moment. So: partition numbers are looked up before any
+# change, each change waits for the nodes to come back, and the result is read back.
+BOOT_PARTN="$(lsblk -ndo PARTN "$BOOT_DEV")"
+ROOT_PARTN="$(lsblk -ndo PARTN "$ROOT_DEV")"
+wait_for_nodes() {
+  local i
+  udevadm settle
+  for i in $(seq 1 20); do
+    [ -b "$BOOT_DEV" ] && [ -b "$ROOT_DEV" ] && return 0
+    sleep 0.5
+  done
+  die "the partitions did not reappear after a partition-table update"
 }
-set_type "$BOOT_DEV" "$GUID_ESP"
-set_type "$ROOT_DEV" "$GUID_LINUX"
-udevadm settle
+set_type() {  # device, disk, partition number, type GUID
+  local dev="$1" disk="$2" partn="$3" guid="$4" try now err=""
+  for try in 1 2 3; do
+    err="$(sfdisk --part-type "$disk" "$partn" "$guid" 2>&1 >/dev/null)" || true
+    wait_for_nodes
+    now="$(sfdisk --part-type "$disk" "$partn" 2>/dev/null | tr 'a-f' 'A-F' || true)"
+    if [ "$now" = "$guid" ]; then
+      say "partition type of $dev set"
+      return 0
+    fi
+    sleep 1
+  done
+  say "WARNING: could not set the partition type of $dev${err:+ ($err)}"
+  say "         The install still works. macOS may offer to initialise the partition: always choose Ignore."
+}
+set_type "$BOOT_DEV" "$BOOT_DISK" "$BOOT_PARTN" "$GUID_ESP"
+set_type "$ROOT_DEV" "$ROOT_DISK" "$ROOT_PARTN" "$GUID_LINUX"
+wait_for_nodes
 
 ROOT_UUID="$(blkid -o value -s UUID "$ROOT_DEV")"
 BOOT_UUID="$(blkid -o value -s UUID "$BOOT_DEV")"
