@@ -117,6 +117,8 @@ def main():
     ap.add_argument("--seconds", type=float, default=20)
     ap.add_argument("--preset", default="veryfast")
     ap.add_argument("--clip-dir", default="/root/build/clips")
+    ap.add_argument("--reconfig-after", type=float, default=0,
+                    help="send the CONFIG again after this many seconds (like a resolution change), then a keyframe")
     ap.add_argument("--partial", action="store_true",
                     help="leave tiles out: tile 0 in every picture, the others in every second picture")
     ap.add_argument("--clip", help="stream this Annex B H.264 file as one tile (needs access unit delimiters: "
@@ -176,6 +178,7 @@ def main():
     end = time.monotonic() + a.seconds
     t0 = time.monotonic()
     pos = [0] * n  # next frame of each tile's clip
+    reconfigured = False
     next_ping = 0
     sent = 0
     try:
@@ -185,6 +188,12 @@ def main():
             delay = due - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
+            if a.reconfig_after and not reconfigured and time.monotonic() - t0 > a.reconfig_after:
+                reconfigured = True
+                print("sending CONFIG again (resolution change)", flush=True)
+                ctrl.sendall(jframe(0x02, cfg))
+                time.sleep(0.15)
+                pos = [0] * n  # first picture after a CONFIG is a keyframe
             # Which tiles go into this picture. Each tile is its own stream, so a tile that is left out
             # simply continues with its next frame the next time it is sent.
             send = [i for i in range(n) if not a.partial or i == 0 or sent % 2 == 0]

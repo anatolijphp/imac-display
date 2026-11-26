@@ -112,7 +112,13 @@ class Daemon {
           case 5: input_.on_inotify(); break;
           case 6: input_.on_readable(fd); break;
           case 7: storage_.on_udev(); break;
-          case 8: { uint64_t n; (void)!read(anim_, &n, sizeof n); display_.animate(); break; }
+          case 8: {
+            uint64_t n;
+            (void)!read(anim_, &n, sizeof n);
+            video_took_screen();
+            display_.animate();
+            break;
+          }
           case 9: { uint64_t n; (void)!read(kf_efd_, &n, sizeof n); send_keyframe_request(); break; }
           case 11: { uint64_t n; (void)!read(mic_efd_, &n, sizeof n); send_mic(); break; }
           case 10: { uint64_t n; (void)!read(kf_timer_, &n, sizeof n); if (kf_pending_) send_keyframe_request(); break; }
@@ -200,6 +206,8 @@ class Daemon {
       video_ = std::move(conn);
       video_->send_json(proto::HELLO, json{{"proto", proto::kVersion}, {"role", "imac"}}.dump());
       fprintf(stderr, "session: video connected\n");
+      if (!video_dec_ && config_.contains("video")) start_video(config_["video"]);
+      update_screen();
       service_video(0, /*buffered_only=*/true);
     } else {
       bye(*conn, channel == "video" ? "no ctrl connection for this session" : "unknown channel");
@@ -256,11 +264,19 @@ class Daemon {
         if (t.value("w", 0) > 3840 || t.value("h", 0) > 2160) err = "tile larger than 3840x2160";
     }
     if (err.empty()) {
+      bool audio_changed = !audio_ || c.value("audio_out", json()) != config_.value("audio_out", json()) ||
+                           c.value("audio_in", json()) != config_.value("audio_in", json());
       config_ = c;
+      config_us_ = now_us();
       fprintf(stderr, "session: CONFIG accepted: %s\n", c["video"].dump().c_str());
       ctrl_->send_json(proto::CONFIG_ACK, R"({"ok":true})");
+      // Video (decoders, GPU setup) starts here, so it is ready when the first picture arrives; it takes
+      // the panel only with that first picture, so a sound-only session (no video connection) keeps the
+      // waiting screen. A CONFIG in the middle of a session (resolution change on the Mac) restarts it.
       start_video(c["video"]);
-      start_audio(c);
+      // Sound restarts only if its own settings changed: a resolution change leaves no gap in the sound.
+      if (audio_changed) start_audio(c);
+      update_screen();
     } else {
       fprintf(stderr, "session: CONFIG rejected: %s\n", err.c_str());
       ctrl_->send_json(proto::CONFIG_ACK, json{{"ok", false}, {"error", err}}.dump());
@@ -277,25 +293,36 @@ class Daemon {
     if (!ok) {
       fprintf(stderr, "session: video connection closed\n");
       video_.reset();
+      stop_video();
     }
   }
 
   void start_video(const json& v) {
-    stop_video();
+    if (video_dec_) {
+      // Resolution change: the old picture goes, the panel shows black (like a monitor switching modes)
+      // until the new stream's first picture, not the waiting screen.
+      blank_on_release_ = true;
+      video_dec_.reset();
+      blank_on_release_ = false;
+      restart_deadline_us_ = now_us() + 3000000;  // waiting screen again if no picture comes
+    }
     VideoConfig cfg;
     cfg.w = v.value("w", 0);
     cfg.h = v.value("h", 0);
     for (const auto& t : v["tiles"])
       cfg.tiles.push_back({t.value("id", 0), t.value("x", 0), t.value("y", 0), t.value("w", 0), t.value("h", 0)});
     ScreenTarget target;  // fd -1: decode without showing (no display)
-    if (display_.is_open()) {
-      display_.pause();
-      target = display_.target();
-    }
+    if (display_.is_open()) target = display_.target();
+    // The waiting screen keeps animating until the first picture takes the panel (see video_took_screen).
     video_dec_ = std::make_unique<Video>(
         target, cfg,
         [this] { uint64_t one = 1; (void)!write(kf_efd_, &one, sizeof one); },
-        [this] { display_.resume(); });
+        [this] { if (blank_on_release_) display_.blank(); else display_.resume(); });
+  }
+
+  // Once the presenter has put its first picture up, the waiting screen stops drawing.
+  void video_took_screen() {
+    if (video_dec_ && video_dec_->showing() && !display_.paused()) display_.pause();
   }
 
   // Sound: playback per CONFIG.audio_out, microphone per CONFIG.audio_in. s16le is the only format.
@@ -336,6 +363,7 @@ class Daemon {
 
   void stop_video() {
     if (!video_dec_) return;
+    blank_on_release_ = false;
     video_dec_.reset();   // the presenter puts the waiting screen back before freeing its buffers
     display_.resume();    // (also when no picture was ever shown)
     update_screen();
@@ -391,7 +419,12 @@ class Daemon {
     if (!opt_.display) return;
     if (!display_.is_open() && !display_.open()) return;
     Display::Status st;
-    if (ctrl_) { st.state = Display::State::Connected; st.mac_name = mac_name_; }
+    if (ctrl_) {
+      st.state = Display::State::Connected;
+      st.mac_name = mac_name_;
+      // A session without a video connection after a while: the Mac has "Use Display" off.
+      if (!video_ && config_us_ && now_us() - config_us_ > 1500000) st.detail = "Sound only. The picture is off on your Mac.";
+    }
     else if (listen_fd_ >= 0 && iface_up()) st.state = Display::State::WaitingForMac;
     else st.state = Display::State::NoCable;
     st.footer = footer();
@@ -433,6 +466,12 @@ class Daemon {
 
   void tick() {
     try_listen();
+    video_took_screen();
+    if (video_dec_ && !video_dec_->showing() && display_.paused() && restart_deadline_us_ &&
+        now_us() > restart_deadline_us_) {
+      restart_deadline_us_ = 0;  // black after a resolution change, but no picture came: waiting screen
+      display_.resume();
+    }
     update_screen();
     uint64_t now = now_us();
     // Connections that never sent HELLO.
@@ -474,6 +513,8 @@ class Daemon {
     if (reason) bye(*ctrl_, reason);
     stop_video();
     audio_.reset();
+    config_ = json();
+    config_us_ = 0;
     ctrl_.reset();
     video_.reset();
     session_.clear();
@@ -504,6 +545,8 @@ class Daemon {
   json config_;
   bool warned_[256] = {};
   std::unique_ptr<Video> video_dec_;
+  bool blank_on_release_ = false;
+  uint64_t restart_deadline_us_ = 0, config_us_ = 0;
   std::unique_ptr<Audio> audio_;
   std::mutex mic_mu_;
   std::deque<std::vector<uint8_t>> mic_q_;

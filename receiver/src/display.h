@@ -24,6 +24,7 @@ class Display {
     State state = State::NoCable;
     std::string mac_name;  // when connected
     std::string footer;    // small text at the bottom: interface, addresses
+    std::string detail;    // connected: line under the title (default "Waiting for the first picture")
   };
   void show(const Status& s);  // full redraw when something changed
   void animate();              // next frame of the "waiting" dots; call ~15 times a second
@@ -33,7 +34,9 @@ class Display {
   // waiting screen back up (called by the video presenter before it frees its buffers).
   ScreenTarget target() const;
   void pause() { paused_ = true; }
+  bool paused() const { return paused_; }
   void resume();
+  void blank();  // black panel (between two video streams), stays paused
 
  private:
   void render_base(const Status& s);

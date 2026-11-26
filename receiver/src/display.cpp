@@ -259,9 +259,10 @@ void Display::render_base(const Status& st) {
       break;
     case State::Connected:
       title = st.mac_name.empty() ? "Connected" : "Connected to " + st.mac_name;
-      sub = "Waiting for the first picture";
+      sub = st.detail.empty() ? "Waiting for the first picture" : st.detail;
       break;
   }
+  fprintf(stderr, "display: waiting screen \"%s\" / \"%s\"\n", title.c_str(), sub.c_str());
   double ty = icon_cy + 360 * s;
   cairo_set_source_rgb(cr, 1, 1, 1);
   centered_text(cr, title, cx, ty, 72 * s, CAIRO_FONT_WEIGHT_BOLD);
@@ -308,9 +309,20 @@ void Display::resume() {
   if (base_) { copy_rect(0, 0, w_, h_); drmModeDirtyFB(fd_, fb_id_, nullptr, 0); }
 }
 
+void Display::blank() {
+  if (fd_ < 0) return;
+  paused_ = true;
+  memset(map_, 0, size_);
+  if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) != 0)
+    fprintf(stderr, "display: blank failed: %s\n", strerror(errno));
+  has_status_ = false;  // the waiting screen is redrawn in full when it comes back
+}
+
 void Display::show(const Status& s) {
   if (fd_ < 0 || paused_) return;
-  if (has_status_ && s.state == status_.state && s.mac_name == status_.mac_name && s.footer == status_.footer) return;
+  if (has_status_ && s.state == status_.state && s.mac_name == status_.mac_name && s.footer == status_.footer &&
+      s.detail == status_.detail)
+    return;
   status_ = s;
   has_status_ = true;
   render_base(s);
