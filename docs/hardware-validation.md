@@ -73,7 +73,7 @@ Test clips (10 s, 600 frames, 60 fps) were made with libx264 and are under `/roo
 - Cards and codec: card 0 `HDA Intel PCH`, codec **Cirrus Logic CS4206** (`/proc/asound/card0/codec#0`, subsystem `106b:8200`), not the CS4208 the build doc expected. Driver fixup: none picked (`picked fixup  for codec SSID 106b:0000`). Pins: 0x0b internal speaker, 0x0a headphone jack, 0x0e mic. Card 1 is the GPU's HDMI audio (unused).
 - Speakers: **work** with the stock driver, no quirk. `amixer -c0 sset Master/Speaker/Headphone 100% unmute`, then `speaker-test -D plughw:0,0 -c2 -t sine -f 440 -l 1`: the user heard it, very loud. Left/right not confirmed separately yet. Comfortable level afterwards: Master 40 % (−38 dB), Speaker 70 %.
 - Headphone jack: **not tested**. The user decided to assume it works (2026-11-26). Unverified.
-- Microphone: live signal, not checked by ear. `amixer -c0 sset Capture 80% cap`, `arecord -D plughw:0,0 -f S16_LE -r 48000 -c1 -d 2`: 2 s of a quiet room gave RMS −45 dBFS, peak 1052/32768 (not digital silence). Voice playback not checked; the user decided to assume it works. Mic Boost was at 0.
+- Microphone: **unverified.** Earlier note (kept for the record): live signal, not checked by ear. `amixer -c0 sset Capture 80% cap`, `arecord -D plughw:0,0 -f S16_LE -r 48000 -c1 -d 2`: 2 s of a quiet room gave RMS −45 dBFS, peak 1052/32768 (not digital silence). Voice playback not checked; the user decided to assume it works. Mic Boost was at 0. **Correction 2026-11-26 15:00:** later 2 s recordings in the same way read −78 to −80 dBFS (peak 10–15) from the first millisecond on, also through the receiver. So the −45 dBFS above was room sound at that moment, not proof that the microphone works, and −80 dBFS could be a quiet room or a dead input. Needs a voice test.
 - Settings or quirks needed: none. Stock `snd_hda_intel`, no `model=` option. Speaker and capture levels only.
 
 ## Other findings
@@ -92,4 +92,16 @@ Test clips (10 s, 600 frames, 60 fps) were made with libx264 and are under `/roo
 ### macOS partition, read-only (looked at, not written)
 
 2026-11-26. `apfsutil /dev/sda2` (apfs-fuse 66b86bd, read-only): one APFS container with volumes 0 Data "Mac - Data" (7.5 GB used), 1 Preboot, 2 Recovery, 3 VM, 4 System "Mac" (one OS-update snapshot), 5 Update. **FileVault: No** on all volumes. `apfs-fuse -v 0 -o ro /dev/sda2 …` mounts the Data volume read-only (kernel mount flags `ro`); one user folder. Read through Samba over loopback: 138 MB file at 376 MB/s.
+
+### CPU clock and decode speed
+
+2026-11-26. `intel_pstate`, governor `powersave`, energy preference `balance_performance` (defaults). The MacBook's real 1080p60 H.264 stream (`/root/build/from-macbook/p1080-60.h264`) through the receiver, decode only (`--no-display`), streamed at a fixed rate by `test/send_video.py --clip`:
+
+| Setting | 30 fps | 60 fps |
+|---|---|---|
+| governor `powersave`, EPP `balance_performance` | 12.1 ms per frame | 6.4 ms |
+| governor `performance` | | 4.2 ms |
+| governor `powersave`, EPP `performance` (what the receiver now sets during a session) | 4.2 ms (with display) | 4.3–4.6 ms (with display) |
+
+Plain `ffmpeg -threads 1 -f null` on the same clip: about 4 ms per frame (MacBook session's measurement).
 

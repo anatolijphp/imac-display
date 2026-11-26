@@ -211,12 +211,12 @@ void Storage::mount_macos() {
       v.disk_syspath = disk_sys;
       v.mountpoint = kVolumes + "/" + v.id;
       v.share_path = v.mountpoint + "/root";  // apfs-fuse shows the volume's files under root/
-      v.share = v.id;
       v.fs = "apfs";
       v.read_only = true;
       v.internal = true;
       std::string nm = name.substr(0, name.find(" (Case"));
       v.label = "iMac macOS (" + nm + ")";
+      v.share = share_name(v.label);
       mkdirs(v.mountpoint);
       if (!is_mountpoint(v.mountpoint) &&
           run({"apfs-fuse", "-v", vol, "-o", "ro", devnode, v.mountpoint}) != 0) {
@@ -295,7 +295,6 @@ void Storage::consider(udev_device* d) {
   if (id.size() > 16) id.resize(16);
   if (vols_.count(id)) id += "-" + std::string(udev_device_get_sysname(d));
   v.id = id;
-  v.share = "usb-" + id;
   v.fs = fs;
   v.label = decode_udev(prop(d, "ID_FS_LABEL_ENC"));
   if (v.label.empty()) v.label = prop(d, "ID_FS_LABEL");
@@ -304,6 +303,9 @@ void Storage::consider(udev_device* d) {
   if (!fs_size.empty()) v.size = strtoull(fs_size.c_str(), nullptr, 10);
   else if (const char* s = udev_device_get_sysattr_value(d, "size")) v.size = strtoull(s, nullptr, 10) * 512;
   v.read_only = opt_.read_only || kReadOnly.count(fs);
+  v.share = share_name(v.label);  // Finder shows the share name as the volume name
+  if (udev_device* usb = udev_device_get_parent_with_subsystem_devtype(d, "usb", "usb_device"))
+    v.usb_syspath = udev_device_get_syspath(usb);
   v.mountpoint = kVolumes + "/" + id;
   v.share_path = v.mountpoint;
 
@@ -369,6 +371,33 @@ void Storage::removed(udev_device* d) {
   }
 }
 
+std::string Storage::share_name(const std::string& label) const {
+  // Letters, digits, space and . _ - ( ) are kept (UTF-8 letters too); anything else becomes '_'.
+  std::string n;
+  for (unsigned char c : label)
+    n += (isalnum(c) || c >= 0x80 || strchr(" ._-()", c)) ? char(c) : '_';
+  while (!n.empty() && (n.back() == ' ' || n.back() == '.')) n.pop_back();
+  while (!n.empty() && n.front() == ' ') n.erase(0, 1);
+  if (n.empty()) n = "USB drive";
+  if (n.size() > 60) n.resize(60);
+  // Samba reserves these section names.
+  std::string lower;
+  for (char c : n) lower += char(tolower((unsigned char)c));
+  if (lower == "global" || lower == "homes" || lower == "printers") n += " drive";
+  auto taken = [&](const std::string& x) {
+    for (auto& [id, v] : vols_) {
+      std::string a = v.share, b = x;
+      for (auto& c : a) c = char(tolower((unsigned char)c));
+      for (auto& c : b) c = char(tolower((unsigned char)c));
+      if (a == b) return true;
+    }
+    return false;
+  };
+  std::string u = n;
+  for (int i = 2; taken(u); i++) u = n + " " + std::to_string(i);
+  return u;
+}
+
 void Storage::announce(const Volume& v) {
   emit_(proto::STORAGE_ATTACHED, nlohmann::json{{"id", v.id},
                                                 {"label", v.label},
@@ -395,14 +424,14 @@ void Storage::eject(const std::string& id) {
   write_samba_config();
   reload_samba();
   unmount_volume(v, false);
-  power_off_disk_if_unused(v.disk_syspath);
+  if (power_off_disk_if_unused(v.disk_syspath) && !v.usb_syspath.empty()) ejected_usb_.push_back(v.usb_syspath);
   emit_(proto::STORAGE_DETACHED, nlohmann::json{{"id", id}}.dump());
 }
 
-void Storage::power_off_disk_if_unused(const std::string& disk_syspath) {
-  if (disk_syspath == root_disk_ || disk_syspath == boot_disk_) return;  // never the internal disk
+bool Storage::power_off_disk_if_unused(const std::string& disk_syspath) {
+  if (disk_syspath == root_disk_ || disk_syspath == boot_disk_) return false;  // never the internal disk
   for (auto& [id, v] : vols_)
-    if (v.disk_syspath == disk_syspath) return;
+    if (v.disk_syspath == disk_syspath) return false;
   // Only power off if none of its partitions is mounted by anyone else either.
   std::ifstream mounts("/proc/self/mountinfo");
   std::string line;
@@ -410,13 +439,13 @@ void Storage::power_off_disk_if_unused(const std::string& disk_syspath) {
   while (std::getline(mounts, line))
     if (line.find(" /dev/" + dev) != std::string::npos) {
       fprintf(stderr, "storage: %s still has mounted partitions, not powering it off\n", dev.c_str());
-      return;
+      return false;
     }
   std::ofstream del(disk_syspath + "/device/delete");
-  if (del) {
-    del << "1\n";
-    fprintf(stderr, "storage: %s powered off, safe to remove\n", dev.c_str());
-  }
+  if (!del) return false;
+  del << "1\n";
+  fprintf(stderr, "storage: %s powered off, safe to remove\n", dev.c_str());
+  return true;
 }
 
 void Storage::write_samba_config() {
@@ -506,6 +535,18 @@ void Storage::reload_samba() {
 
 void Storage::session_started() {
   session_ = true;
+  // Drives ejected in an earlier session but never unplugged: switch their USB device off and on again,
+  // so they are found again (an ejected drive would otherwise stay invisible until it is replugged).
+  for (const auto& usb : ejected_usb_) {
+    std::ofstream a0(usb + "/authorized");
+    if (!a0) continue;  // unplugged meanwhile
+    a0 << "0\n";
+    a0.close();
+    std::ofstream a1(usb + "/authorized");
+    a1 << "1\n";
+    fprintf(stderr, "storage: bringing back the drive ejected earlier at %s\n", usb.c_str());
+  }
+  ejected_usb_.clear();
   start_samba();
   for (auto& [id, v] : vols_) announce(v);
 }

@@ -4,6 +4,26 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, iMac session (video fixes, sound, drives)
+
+Merged `macbook` (6651aee). All three video points fixed, sound built, both drive points done. Installed and running on the iMac (`--iface wlan0 --no-macos-share` still set for your Wi-Fi tests).
+
+**Video** (commit 8272f9d, details in `receiver/README.md`, Video):
+1. Lost keyframe request: fixed. A request held back by the 250 ms limit is sent when the limit expires; a decoder waiting for a keyframe asks again every second while packets arrive.
+2. Queue limit: now by age. A tile's backlog is dropped only when its oldest packet is over 500 ms old. Also: decoders never wait any more (they waited for the GPU at session start, which is what filled the queue in your first run), and a race dropped the packet right after every keyframe.
+3. Slow decode: you were right, it was the CPU clock. The receiver now sets the energy preference to `performance` during a session only. Your 1080p clip: 12.1 ms per frame at 30 fps before, 4.2 ms now (= plain ffmpeg). Numbers in `docs/hardware-validation.md`.
+- **Tiles left out**: implemented as in `PROTOCOL.md`.
+- Tested on the iMac screen with your clip at 30 and 60 per second, 4K in four tiles, 5K with tiles left out: steady 60/60/0 (30/30/0), **no keyframe requests**. Receive-to-screen 17–30 ms. Open on my side: the page flip takes a full refresh in steady state.
+- The receiver exiting after every session: fixed. `smbd` shut down its whole process group, which included the receiver. It now runs in its own group.
+
+**Sound** (commit 75a2c48): `HELLO` now says `"audio":{"out":true,"in":true}`. `AUDIO_OUT` → jitter buffer (start at 30 ms, refill to 30 on underrun, drop 10 ms above 60) → ALSA `plughw:PCH,0`, 5 ms periods. `AUDIO_IN`: 10 ms messages, 960 bytes for 48 kHz mono, when `audio_in.enabled`. `AUDIO_VOLUME` → Master on a perceptual curve (0.5 = −18 dB); until you send it, the mixer stays where it is (quiet). Tested with silence on loopback (`receiver/test/send_audio.py`): 100 in, 100 out per second, buffer 37.6 ms average, 0 underruns. **Not heard yet**, and the microphone level is unverified (−78 dBFS in a quiet room; I asked the user for a voice test).
+
+**Drives:**
+- No stick in your session: the stick was powered off by an eject in my earlier test and never replugged, so there was nothing to announce. Now a drive ejected but not unplugged is switched back on at the next session (tested: eject, new session, the stick is announced again).
+- Share names from the label: `"share":"writable"`, `"share":"Ubuntu 26.04 amd64"` (readable, unique, may contain **spaces**: please percent-encode it in the `smb://` URL). `id` is unchanged.
+
+---
+
 ## 2026-11-26, MacBook session (input, drives and sound on the Mac side)
 
 The user tried a 3-minute live session (1920×1080, 30 per second, Wi-Fi) and reported: no sound, no keyboard, no mouse, no drives on the MacBook. The first three were missing on my side and are built now (`mac/Sources/IMDKit/InputInjector.swift`, `StorageMounter.swift`, audio in `Capture.swift`). `imd pipeline --host …` uses all of them.

@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 struct udev;
 struct udev_monitor;
@@ -35,6 +36,7 @@ class Storage {
   struct Volume {
     std::string id, devnode, syspath, disk_syspath, label, fs, mountpoint, share;
     std::string share_path;  // directory shared over SMB; usually the mountpoint
+    std::string usb_syspath; // the USB device the disk sits on (to bring it back after an eject)
     uint64_t size = 0;
     bool read_only = false;
     bool internal = false;   // the iMac's own macOS volume: never unmounted on eject, never powered off
@@ -49,7 +51,8 @@ class Storage {
   void start_samba();
   void stop_samba();
   void reload_samba();
-  void power_off_disk_if_unused(const std::string& disk_syspath);
+  bool power_off_disk_if_unused(const std::string& disk_syspath);
+  std::string share_name(const std::string& label) const;  // readable, SMB-safe, unique
 
   Options opt_;
   Emit emit_;
@@ -58,6 +61,7 @@ class Storage {
   std::map<std::string, Volume> vols_;  // by id
   bool session_ = false;
   std::string password_;
+  std::vector<std::string> ejected_usb_;  // powered off by an eject; brought back at the next session
   pid_t smbd_ = -1;
   std::string root_disk_, boot_disk_;  // sysfs paths of the internal disk(s) holding / and /boot: never touched
 };
