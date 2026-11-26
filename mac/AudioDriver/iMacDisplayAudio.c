@@ -1,15 +1,18 @@
 // iMac Display audio driver: a Core Audio server plug-in (user space, no kernel code).
 //
-// It adds two devices to macOS:
+// It has two devices:
 //   "iMac Speakers"        output only, visible. Apps (or the whole system) play into it.
 //   "iMac Speakers (tap)"  input only, hidden. The iMac Display app records from it and gets
 //                          exactly what was played into "iMac Speakers", to send to the iMac.
+// "iMac Speakers" exists only while the app is recording from the tap, that is, while an iMac is
+// connected. Like the speakers of a real monitor, it appears with the display and goes with it.
 // The driver never changes the samples. Volume and mute of "iMac Speakers" are only stored here;
 // the app reads them and tells the iMac, which applies them at its own speakers.
 //
 // Both devices run on the same pretend clock (the Mac's own time base at 48 kHz), so what is
 // written at one moment can be read back by position without any resampling.
 #include <CoreAudio/AudioServerPlugIn.h>
+#include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
 #include <math.h>
 #include <pthread.h>
@@ -51,6 +54,18 @@ static DeviceClock gOut, gTap;
 static Float32 gVolume = 0.5f;
 static UInt32 gMute = 0;
 static Float32 *gRing = NULL;           // kRingFrames interleaved stereo frames
+static Boolean gOutPublished = false;   // "iMac Speakers" is in the device list (the app is listening)
+
+// Tells macOS that the list of devices changed. Not from inside a driver call: later, on another thread.
+static void announceDeviceList(void) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        const AudioObjectPropertyAddress changed[2] = {
+            {kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+            {kAudioObjectPropertyOwnedObjects, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain},
+        };
+        if (gHost) gHost->PropertiesChanged(gHost, kObj_PlugIn, 2, changed);
+    });
+}
 
 static DeviceClock *clockOf(AudioObjectID device) { return device == kObj_Out ? &gOut : device == kObj_Tap ? &gTap : NULL; }
 static Boolean isDevice(AudioObjectID o) { return o == kObj_Out || o == kObj_Tap; }
@@ -155,19 +170,21 @@ static OSStatus property(AudioObjectID obj, const AudioObjectPropertyAddress *a,
                          UInt32 inSize, UInt32 *outSize, void *out) {
     const AudioObjectPropertyScope scope = a->mScope;
     if (obj == kObj_PlugIn) {
-        static const AudioObjectID devices[] = {kObj_Out, kObj_Tap};
+        // The tap is always there; "iMac Speakers" only while the app listens.
+        static const AudioObjectID devices[] = {kObj_Tap, kObj_Out};
+        pthread_mutex_lock(&gMutex); const Boolean published = gOutPublished; pthread_mutex_unlock(&gMutex);
         switch (a->mSelector) {
             case kAudioObjectPropertyBaseClass: RET(AudioClassID, kAudioObjectClassID);
             case kAudioObjectPropertyClass: RET(AudioClassID, kAudioPlugInClassID);
             case kAudioObjectPropertyOwner: RET(AudioObjectID, kAudioObjectUnknown);
             case kAudioObjectPropertyManufacturer: RET(CFStringRef, kManufacturer);
             case kAudioObjectPropertyOwnedObjects:
-            case kAudioPlugInPropertyDeviceList: return retList(devices, 2, inSize, outSize, out);
+            case kAudioPlugInPropertyDeviceList: return retList(devices, published ? 2 : 1, inSize, outSize, out);
             case kAudioPlugInPropertyTranslateUIDToDevice: {
                 AudioObjectID found = kAudioObjectUnknown;
                 if (qualSize == sizeof(CFStringRef) && qual && *(CFStringRef *)qual) {
                     CFStringRef uid = *(CFStringRef *)qual;
-                    if (CFStringCompare(uid, kOutUID, 0) == kCFCompareEqualTo) found = kObj_Out;
+                    if (CFStringCompare(uid, kOutUID, 0) == kCFCompareEqualTo) found = published ? kObj_Out : kAudioObjectUnknown;
                     else if (CFStringCompare(uid, kTapUID, 0) == kCFCompareEqualTo) found = kObj_Tap;
                 }
                 RET(AudioObjectID, found);
@@ -198,7 +215,10 @@ static OSStatus property(AudioObjectID obj, const AudioObjectPropertyAddress *a,
             case kAudioDevicePropertyTransportType: RET(UInt32, kAudioDeviceTransportTypeVirtual);
             case kAudioDevicePropertyRelatedDevices: return retList(&obj, 1, inSize, outSize, out);
             case kAudioDevicePropertyClockDomain: RET(UInt32, 0);
-            case kAudioDevicePropertyDeviceIsAlive: RET(UInt32, 1);
+            case kAudioDevicePropertyDeviceIsAlive: {
+                pthread_mutex_lock(&gMutex); UInt32 alive = !isOut || gOutPublished; pthread_mutex_unlock(&gMutex);
+                RET(UInt32, alive);
+            }
             case kAudioDevicePropertyDeviceIsRunning: {
                 pthread_mutex_lock(&gMutex); UInt32 running = clockOf(obj)->ioCount > 0; pthread_mutex_unlock(&gMutex);
                 RET(UInt32, running);
@@ -429,7 +449,10 @@ static OSStatus IMD_StartIO(AudioServerPlugInDriverRef d, AudioObjectID device, 
         if (device == kObj_Tap && gRing) memset(gRing, 0, kRingFrames * kBytesPerFrame);   // nothing old for a new listener
     }
     c->ioCount++;
+    Boolean appeared = false;
+    if (device == kObj_Tap && !gOutPublished) { gOutPublished = true; appeared = true; }   // the app listens: show "iMac Speakers"
     pthread_mutex_unlock(&gMutex);
+    if (appeared) announceDeviceList();
     return kAudioHardwareNoError;
 }
 
@@ -438,7 +461,10 @@ static OSStatus IMD_StopIO(AudioServerPlugInDriverRef d, AudioObjectID device, U
     if (d != gDriverRef || !c) return kAudioHardwareBadObjectError;
     pthread_mutex_lock(&gMutex);
     if (c->ioCount) c->ioCount--;
+    Boolean gone = false;
+    if (device == kObj_Tap && c->ioCount == 0 && gOutPublished) { gOutPublished = false; gone = true; }   // nobody listens: hide it
     pthread_mutex_unlock(&gMutex);
+    if (gone) announceDeviceList();
     return kAudioHardwareNoError;
 }
 

@@ -4,7 +4,15 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
-## 2026-11-26, MacBook session (service confirmed)
+## 2026-11-26, MacBook session (resolution from Display settings; sound device comes and goes)
+
+Three changes the user asked for. Two of them reach you:
+
+- **A new `CONFIG` now arrives in the middle of a session** whenever the user changes the resolution in macOS's Display settings. I stop sending, wait 150 ms, send `CONFIG`, wait for your `CONFIG_ACK`, then send again starting with a keyframe on the same video connection. Tested against your receiver: 1280×720 → 1920×1080 → 3840×2160 → 1920×1080, each `CONFIG accepted` and pictures shown after each. Sizes you can now see: any 16:9 size from 1280×720 to 3840×2160.
+- **`AUDIO_OUT` and your `start_audio`:** every such `CONFIG` restarts your player. That is fine, but it is a short gap in the sound on each resolution change.
+- "iMac Speakers" now exists on the MacBook only while a session is up, and the Mac's sound moves to it automatically. Nothing changes on the wire.
+
+
 
 `dns-sd -B _imacdisplay._tcp` on the MacBook: `Add … local. _imacdisplay._tcp. imac-display` on `en0` (Wi-Fi). `dns-sd -L imac-display _imacdisplay._tcp`: `imac-display.local.:7500`, TXT `proto=0 model=iMac17,1 panel=5120x2880`. Correct. Still unverified: the same on `bridge0`, which needs the cable.
 

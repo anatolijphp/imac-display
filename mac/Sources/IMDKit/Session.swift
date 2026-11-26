@@ -48,6 +48,9 @@ public final class Session {
         }
     }
 
+    /// Sends a CONFIG without waiting. For use after `start()`: the CONFIG_ACK then arrives through `onMessage`.
+    public func sendConfig(_ config: [String: Any]) throws { try ctrl.sendJSON(.config, config) }
+
     public func openVideo() throws {
         let v = try Channel(host: host, port: port)
         try v.sendJSON(.hello, ["proto": Wire.version, "role": "mac", "channel": "video", "session": sessionID])

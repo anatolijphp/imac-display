@@ -1,5 +1,8 @@
 // One complete session with the iMac: extra display, video, sound, keyboard and mouse, drives.
 // The app starts one when it finds the iMac and drops it when the session ends.
+//
+// The extra display behaves like a monitor: its resolution is chosen in macOS's Display settings,
+// and the stream follows that choice while the session runs.
 import AppKit
 import CoreMedia
 
@@ -8,14 +11,14 @@ public final class DisplaySession {
         public var host: String
         public var port: UInt16 = Wire.port
         public var macName: String
-        public var pointsWide = 1920
-        public var pointsHigh = 1080
-        public var hiDPI = false
         /// Largest picture to send; the capture scales the display down to it when the display has more pixels.
         public var maxStreamWidth = 3840
         public var maxStreamHeight = 2160
-        public var bitrate = 10_000_000
+        /// Upper limit; the actual rate follows the picture size (about 10 Mbit/s at 1920×1080, 40 at 3840×2160).
+        public var maxBitrate = 40_000_000
         public var fps = 60
+        /// Switch the Mac's sound output to "iMac Speakers" while connected.
+        public var selectSpeakers = true
         public init(host: String, macName: String) { self.host = host; self.macName = macName }
     }
 
@@ -36,6 +39,9 @@ public final class DisplaySession {
     public private(set) var soundSource = SoundSource.none
     public private(set) var streamWidth = 0
     public private(set) var streamHeight = 0
+    /// The desktop size picked in Display settings, in points.
+    public private(set) var desktopWidth = 0
+    public private(set) var desktopHeight = 0
 
     private let config: Config
     private var session: Session?
@@ -45,11 +51,16 @@ public final class DisplaySession {
     private var injector: InputInjector?
     private var mounter: StorageMounter?
     private var speakers: SpeakerDevice?
+    private var screenObserver: NSObjectProtocol?
+    private var limitWidth = 3840, limitHeight = 2160
+    private var screenAudio = false
+    private var reconfiguring = false
     private let keyframeWanted = OneShot()
     private let sentCounter = Tally()
     private var audioPending = Data()
     private let lock = NSLock()
     private var finished = false
+    private var ack: (ok: Bool, error: String)?   // the answer to the last CONFIG
 
     public init(_ config: Config) { self.config = config }
 
@@ -61,56 +72,33 @@ public final class DisplaySession {
         session = s
         let hello = s.imacHello
         let decode = hello["decode"] as? [String: Any] ?? [:]
-        let maxW = min(c.maxStreamWidth, decode["max_w"] as? Int ?? 3840)
-        let maxH = min(c.maxStreamHeight, decode["max_h"] as? Int ?? 2160)
-        let pixelsW = c.pointsWide * (c.hiDPI ? 2 : 1), pixelsH = c.pointsHigh * (c.hiDPI ? 2 : 1)
-        let scale = min(1.0, Double(maxW) / Double(pixelsW), Double(maxH) / Double(pixelsH))
-        streamWidth = Int(Double(pixelsW) * scale) / 2 * 2
-        streamHeight = Int(Double(pixelsH) * scale) / 2 * 2
+        limitWidth = min(c.maxStreamWidth, decode["max_w"] as? Int ?? 3840)
+        limitHeight = min(c.maxStreamHeight, decode["max_h"] as? Int ?? 2160)
         let features = hello["features"] as? [String] ?? []
         let audio = hello["audio"] as? [String: Any] ?? [:]
-
-        s.onMessage = { [weak self] h, p in self?.received(h, p) }
-        s.onEnd = { [weak self] reason in self?.finish(reason, sendBye: false) }
-        try s.configure([
-            "video": ["codec": "h264", "fps": c.fps, "w": streamWidth, "h": streamHeight, "scale": "fit",
-                      "tiles": [["id": 0, "x": 0, "y": 0, "w": streamWidth, "h": streamHeight]]] as [String: Any],
-            "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
-            "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
-        ])
-        try s.openVideo()
 
         if features.contains("input") { injector = InputInjector() }
         if features.contains("storage") {
             mounter = StorageMounter(host: s.host, sendEject: { [weak s] id in try? s?.ctrl.sendJSON(.storageEject, ["id": id]) },
                                      log: { [weak self] in self?.log("drives: \($0)") })
         }
+        s.onMessage = { [weak self] h, p in self?.received(h, p) }
+        s.onEnd = { [weak self] reason in self?.finish(reason) }
         s.start()   // from here on the once-a-second PING keeps the session alive
 
-        var enc = H264Encoder.Config(width: streamWidth, height: streamHeight, fps: c.fps, bitrate: c.bitrate)
-        enc.lowLatency = true
-        let encoder = try H264Encoder(enc)
-        self.encoder = encoder
-        encoder.onOutput = { [weak self] out in
-            guard let self, let session = self.session else { return }
-            do {
-                try session.sendVideo(tile: 0, keyframe: out.keyframe, lastTile: true, ptsUs: out.ptsUs, data: out.annexB)
-                self.sentCounter.add()
-            } catch { self.finish("\(error)", sendBye: false) }
-        }
-
-        guard let vd = VirtualDisplay(name: "iMac Display", pointsWide: c.pointsWide, pointsHigh: c.pointsHigh, hiDPI: c.hiDPI) else {
+        guard let vd = VirtualDisplay(name: "iMac Display", modes: VirtualDisplay.imacModes, hiDPI: true) else {
             throw CaptureError("macOS refused to create the extra display")
         }
         display = vd
+        for _ in 0..<40 where vd.currentPixelSize == nil { try await Task.sleep(nanoseconds: 50_000_000) }
 
         // Sound. With our driver installed, only what is played into "iMac Speakers"; otherwise everything.
-        var screenAudio = false
         if audio["out"] as? Bool == true {
             if let dev = SpeakerDevice(), SpeakerDevice.microphonePermission == .authorized {
                 dev.onAudio = { [weak self] in self?.pcm($0) }
+                dev.selectWhileRunning = c.selectSpeakers
+                dev.log = { [weak self] in self?.log("sound: \($0)") }
                 dev.onVolume = { [weak s] level, mute in try? s?.ctrl.sendJSON(.audioVolume, ["volume": Double(level), "mute": mute]) }
-                try dev.start()
                 speakers = dev
                 soundSource = .speakersDevice
             } else {
@@ -119,8 +107,64 @@ public final class DisplaySession {
             }
         }
 
+        try await startStream()
+        try speakers?.start()   // after the first CONFIG: the iMac starts its player on CONFIG
+
+        // The user changed the resolution in Display settings (or rearranged displays): follow.
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in await self?.displayChanged() } }
+    }
+
+    /// Ends the session from our side (quit, settings changed).
+    public func stop(reason: String = "quit") { finish(reason) }
+
+    // MARK: video
+
+    /// The picture to send for a display of this many pixels: the same shape, at most the iMac's limit, even numbers.
+    private func streamSize(for pixels: (width: Int, height: Int)) -> (Int, Int) {
+        let scale = min(1.0, Double(limitWidth) / Double(pixels.width), Double(limitHeight) / Double(pixels.height))
+        return (Int(Double(pixels.width) * scale) / 2 * 2, Int(Double(pixels.height) * scale) / 2 * 2)
+    }
+
+    /// Tells the iMac the picture size, then starts encoder and capture for the display's current resolution.
+    @MainActor private func startStream() async throws {
+        guard let vd = display, let s = session, let pixels = vd.currentPixelSize else { throw CaptureError("the extra display did not appear") }
+        let c = config
+        let (w, h) = streamSize(for: pixels)
+        streamWidth = w; streamHeight = h
+        if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
+
+        setAck(nil)
+        try s.sendConfig([
+            "video": ["codec": "h264", "fps": c.fps, "w": w, "h": h, "scale": "fit",
+                      "tiles": [["id": 0, "x": 0, "y": 0, "w": w, "h": h]]] as [String: Any],
+            "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
+            "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
+        ])
+        var answer: (ok: Bool, error: String)?
+        for _ in 0..<150 {   // 3 s
+            answer = currentAck
+            if answer != nil || isFinished { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard let answer else { throw CaptureError("the iMac did not answer CONFIG") }
+        guard answer.ok else { throw CaptureError("the iMac refused \(w)x\(h): \(answer.error)") }
+        if s.video == nil { try await Task.detached { try s.openVideo() }.value }
+
+        var enc = H264Encoder.Config(width: w, height: h, fps: c.fps, bitrate: min(c.maxBitrate, max(6_000_000, Int(Double(w * h) * 4.8))))
+        enc.lowLatency = true
+        let encoder = try H264Encoder(enc)
+        self.encoder = encoder
+        encoder.onOutput = { [weak self] out in
+            guard let self, let session = self.session else { return }
+            do {
+                try session.sendVideo(tile: 0, keyframe: out.keyframe, lastTile: true, ptsUs: out.ptsUs, data: out.annexB)
+                self.sentCounter.add()
+            } catch { self.finish("\(error)") }
+        }
+
         let capture = DisplayCapture()
-        self.capture = capture
         var first = true
         capture.onFrame = { [weak self] pixelBuffer, _ in
             guard let self else { return }
@@ -129,12 +173,14 @@ public final class DisplaySession {
             encoder.encode(pixelBuffer, ptsUs: Wire.nowUs(), forceKeyframe: key)
         }
         if screenAudio { capture.onAudio = { [weak self] in self?.pcm($0) } }
-        // The new display takes a moment to become capturable.
+        // A new display takes a moment to become capturable.
         var lastError: Error = CaptureError("the extra display did not appear")
         for _ in 0..<20 {
             do {
                 // Twice the frame rate as the minimum interval: asking for exactly 1/60 s loses pictures.
-                try await capture.start(displayID: vd.displayID, width: streamWidth, height: streamHeight, fps: c.fps * 2, audio: screenAudio)
+                try await capture.start(displayID: vd.displayID, width: w, height: h, fps: c.fps * 2, audio: screenAudio)
+                self.capture = capture
+                log("display \(desktopWidth)x\(desktopHeight), sending \(w)x\(h) at \(enc.bitrate / 1_000_000) Mbit/s")
                 return
             } catch {
                 lastError = error
@@ -144,8 +190,24 @@ public final class DisplaySession {
         throw lastError
     }
 
-    /// Ends the session from our side (quit, settings changed).
-    public func stop(reason: String = "quit") { finish(reason, sendBye: true) }
+    @MainActor private func displayChanged() async {
+        guard !isFinished, !reconfiguring, let vd = display, let pixels = vd.currentPixelSize else { return }
+        let (w, h) = streamSize(for: pixels)
+        if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
+        guard w != streamWidth || h != streamHeight else { return }
+        reconfiguring = true
+        log("resolution changed in Display settings")
+        await capture?.stop()
+        capture = nil
+        encoder?.flush()
+        encoder = nil
+        try? await Task.sleep(nanoseconds: 150_000_000)   // let the last pictures of the old size arrive first
+        do { try await startStream() } catch { finish("\(error)") }
+        reconfiguring = false
+        await displayChanged()   // in case it changed again meanwhile
+    }
+
+    // MARK: messages from the iMac
 
     private func received(_ h: FrameHeader, _ p: Data) {
         guard let type = MsgType(rawValue: h.type) else { return }
@@ -155,6 +217,9 @@ public final class DisplaySession {
         case .storageAttached, .storageDetached:
             guard let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] else { return }
             if type == .storageAttached { mounter?.attached(j) } else { mounter?.detached(j) }
+        case .configAck:
+            let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] ?? [:]
+            setAck((j["ok"] as? Bool == true, j["error"] as? String ?? "no reason given"))
         case .videoRequestKeyframe:
             keyframeWanted.set()
         case .videoStats:
@@ -171,7 +236,7 @@ public final class DisplaySession {
         }
     }
 
-    /// 10 ms per AUDIO_OUT message. Always called on one queue per sound source.
+    /// 10 ms per AUDIO_OUT message. Called on one queue at a time.
     private func pcm(_ data: Data) {
         audioPending.append(data)
         while audioPending.count >= 1920 {
@@ -180,25 +245,31 @@ public final class DisplaySession {
         }
     }
 
-    private func finish(_ reason: String, sendBye: Bool) {
+    private func setAck(_ value: (ok: Bool, error: String)?) { lock.lock(); ack = value; lock.unlock() }
+    private var currentAck: (ok: Bool, error: String)? { lock.lock(); defer { lock.unlock() }; return ack }
+
+    private var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+
+    private func finish(_ reason: String) {
         lock.lock()
         let firstTime = !finished
         finished = true
         lock.unlock()
         guard firstTime else { return }
-        let capture = self.capture, display = self.display
-        speakers?.stop()
+        let capture = self.capture, display = self.display, observer = screenObserver
+        speakers?.stop()          // puts the Mac's sound output back and makes "iMac Speakers" disappear
         injector?.releaseAll()
         mounter?.unmountAll()
-        _ = sendBye             // close() sends BYE only while the connection is still up
-        session?.close(reason: reason)
+        session?.close(reason: reason)   // sends BYE if the connection is still up
         Task { @MainActor in
+            if let observer { NotificationCenter.default.removeObserver(observer) }
             await capture?.stop()
             withExtendedLifetime(display) {}   // let go of the extra display only after the capture has stopped
         }
         self.capture = nil
         self.display = nil
         self.encoder = nil
+        self.screenObserver = nil
         onEnd?(reason)
     }
 }

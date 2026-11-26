@@ -42,6 +42,9 @@ usage: imd <command> [options]
       the iMac's keyboard and mouse then control this Mac and its USB drives are mounted here.
       --seconds 0 runs until Ctrl-C.
 
+  setmode   --points WxH [--lodpi]
+      Change the resolution of the app's extra display, as Display settings would (for testing).
+
   hello     --host NAME [--port P] [--seconds N]
       Open a session with the iMac without video and print what it sends.
 
@@ -82,6 +85,26 @@ func describe(_ h: FrameHeader, _ payload: Data) -> String {
         try await Task.sleep(nanoseconds: 100_000_000)
     }
     print("still online 5 s after release")
+}
+
+/// Changes the resolution of the app's extra display, as picking it in Display settings would.
+func setMode(_ o: Options) throws {
+    let (w, h) = o.size("points", (1920, 1080))
+    var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+    var n: UInt32 = 0
+    CGGetOnlineDisplayList(16, &ids, &n)
+    guard let id = ids.prefix(Int(n)).first(where: { CGDisplayVendorNumber($0) == 0x1D5C }) else {
+        throw Failure(description: "the iMac Display extra display is not there")
+    }
+    let all = CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary) as? [CGDisplayMode] ?? []
+    print("modes: " + all.map { "\($0.width)x\($0.height)@\($0.pixelWidth)x\($0.pixelHeight)" }.joined(separator: ", "))
+    let wantPixels = o.flags.contains("lodpi") ? w : w * 2
+    guard let mode = all.first(where: { $0.width == w && $0.height == h && $0.pixelWidth == wantPixels }) else {
+        throw Failure(description: "no \(w)x\(h) mode with \(wantPixels) pixels across")
+    }
+    let rc = CGDisplaySetDisplayMode(id, mode, nil)
+    guard rc == .success else { throw Failure(description: "could not change the mode (\(rc.rawValue))") }
+    print("display \(id) set to \(w)x\(h) points, \(mode.pixelWidth)x\(mode.pixelHeight) pixels")
 }
 
 @MainActor func hello(_ o: Options) async throws {
@@ -283,9 +306,11 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
             try? session?.ctrl.sendJSON(.audioVolume, ["volume": Double(level), "mute": mute])
             print(String(format: "sound: iMac Speakers volume %.0f %%%@", level * 100, mute ? ", muted" : ""))
         }
+        dev.selectWhileRunning = !o.flags.contains("no-select-speakers")
+        dev.log = { print("sound: \($0)") }
         try dev.start()
         speakers = dev
-        print("sound: sending what is played into \"iMac Speakers\"" + (dev.isDefaultOutput ? "" : " (pick it as the output in the sound menu to hear this Mac on the iMac)"))
+        print("sound: sending what is played into \"iMac Speakers\"")
     } else if wantAudio {
         capture.onAudio = onPCM
         print("sound: sending everything this Mac plays (the iMac Speakers driver is not installed)")
@@ -374,6 +399,7 @@ final class TileCollector {
     }
 }
 
+SpeakerDevice.runAsHelperIfAsked()   // a second copy of this program, started only to switch the sound output
 setvbuf(stdout, nil, _IOLBF, 0)
 let arguments = Array(CommandLine.arguments.dropFirst())
 let app = NSApplication.shared
@@ -385,6 +411,7 @@ Task { @MainActor in
         case "vdisplay": try await vdisplay(o)
         case "pipeline": try await pipeline(o)
         case "hello": try await hello(o)
+        case "setmode": try setMode(o)
         default: print(usage); exit(arguments.isEmpty ? 0 : 2)
         }
         exit(0)

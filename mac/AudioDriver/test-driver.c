@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int failures = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
@@ -74,6 +75,28 @@ int main(int argc, char **argv) {
     AudioObjectPropertyAddress none = {kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
     CHECK(!i->HasProperty(d, 8, 0, &none) && !i->HasProperty(d, 99, 0, &none), "an object that does not exist has properties");
 
+    // "iMac Speakers" is published only while somebody records from the tap.
+    AudioObjectPropertyAddress listAddr = {kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    AudioObjectID list[4]; UInt32 listUsed = 0;
+    CFStringRef speakersUID = CFSTR("iMacDisplay:speakers");
+    AudioObjectPropertyAddress trOut = {kAudioPlugInPropertyTranslateUIDToDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    AudioObjectID outFound = 99; UInt32 u2 = 0;
+    i->GetPropertyData(d, 1, 0, &listAddr, 0, NULL, sizeof list, &listUsed, list);
+    i->GetPropertyData(d, 1, 0, &trOut, sizeof speakersUID, &speakersUID, sizeof outFound, &u2, &outFound);
+    CHECK(listUsed == sizeof(AudioObjectID) && list[0] == 6 && outFound == 0, "before the app listens: %u device(s), speakers UID gives %u", listUsed / 4, outFound);
+    int before = notifications;
+    CHECK(i->StartIO(d, 6, 9) == 0, "StartIO tap");
+    usleep(200000);   // the announcement is sent from another thread
+    i->GetPropertyData(d, 1, 0, &listAddr, 0, NULL, sizeof list, &listUsed, list);
+    i->GetPropertyData(d, 1, 0, &trOut, sizeof speakersUID, &speakersUID, sizeof outFound, &u2, &outFound);
+    CHECK(listUsed == 2 * sizeof(AudioObjectID) && outFound == 2 && notifications == before + 2, "while the app listens: %u device(s), speakers UID gives %u, %d notifications", listUsed / 4, outFound, notifications - before);
+    CHECK(i->StopIO(d, 6, 9) == 0, "StopIO tap");
+    usleep(200000);
+    i->GetPropertyData(d, 1, 0, &listAddr, 0, NULL, sizeof list, &listUsed, list);
+    CHECK(listUsed == sizeof(AudioObjectID) && notifications == before + 4, "after the app stopped: %u device(s), %d notifications", listUsed / 4, notifications - before);
+    printf("iMac Speakers appears and disappears with the listener: checked\n");
+    notifications = 0;
+
     // UID lookup, names, hidden flag.
     CFStringRef uid = CFSTR("iMacDisplay:speakers-tap");
     AudioObjectID found = 0; UInt32 used = 0;
@@ -102,6 +125,7 @@ int main(int argc, char **argv) {
 
     // Loopback: play a ramp at sample 1000 of the speakers, read the tap from sample 0.
     CHECK(i->StartIO(d, 2, 1) == 0 && i->StartIO(d, 6, 1) == 0, "StartIO");
+    usleep(200000); notifications = 0;
     Float64 st; UInt64 ht, seed;
     CHECK(i->GetZeroTimeStamp(d, 2, 1, &st, &ht, &seed) == 0 && st == 0 && seed == 1, "zero time stamp");
     Boolean will = false, inPlace = false;
