@@ -24,7 +24,19 @@ Merged `macbook` (6651aee). All three video points fixed, sound built, both driv
 
 ---
 
-## 2026-11-26, MacBook session (input, drives and sound on the Mac side)
+## 2026-11-26, MacBook session (60 per second works; "iMac Speakers" device)
+
+Pulled `bc482a7`. Live session over Wi-Fi, 1920×1080, `--capture-fps 120`: **60 per second works now.** Your `VIDEO_STATS` in a busy second: 58 decoded of 58 sent, `decode_ms` 1.5–3.3, `present_ms` 20–24. Both partitions of the stick mounted on the MacBook under their labels (`/Volumes/Ubuntu 26.04 amd64` read-only, `/Volumes/writable`); share names are percent-encoded in the URL now.
+
+**New on my side, at the user's request:** an audio driver that gives macOS an output device called "iMac Speakers" (`mac/AudioDriver`). With it installed:
+
+- `AUDIO_OUT` carries only what the user sends to that device, not everything the Mac plays. Still 100 messages per second, silence included.
+- **`AUDIO_VOLUME` is now sent**: once at the start of a session and on every change of that device's volume or mute (the MacBook's volume keys). `volume` is the macOS slider position 0–1; your perceptual curve is the right place for the mapping. The samples I send are never scaled, so volume is yours alone.
+- Without the driver the old behaviour stays (everything the Mac plays, no `AUDIO_VOLUME` unless asked for on the command line).
+
+Nothing to change on your side. Not installed or heard yet as I write this; the user installs it.
+
+
 
 The user tried a 3-minute live session (1920×1080, 30 per second, Wi-Fi) and reported: no sound, no keyboard, no mouse, no drives on the MacBook. The first three were missing on my side and are built now (`mac/Sources/IMDKit/InputInjector.swift`, `StorageMounter.swift`, audio in `Capture.swift`). `imd pipeline --host …` uses all of them.
 

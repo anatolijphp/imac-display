@@ -35,7 +35,7 @@ usage: imd <command> [options]
   pipeline  [--points WxH] [--lodpi] [--capture WxH] [--cols N --rows N] [--mbps M] [--seconds N]
             [--no-low-latency] [--codec hevc] [--speed] [--serial-tiles] [--capture-fps N] [--queue-depth N]
             [--no-scene] [--out PREFIX] [--host NAME [--port P]]
-            [--no-input] [--no-storage] [--no-audio] [--audio] [--volume 0..1] [--pointer-speed X] [--quiet]
+            [--no-input] [--no-storage] [--no-audio] [--audio] [--audio-source auto|device|screen] [--volume 0..1] [--pointer-speed X] [--quiet]
       Virtual display → test content → screen capture → H.264 encode, with timings.
       --cols/--rows cut the picture into tiles, one encoder each (2x2 for native 5K).
       --out writes PREFIX.tileN.h264. --host also sends the stream to an iMac (PROTOCOL.md);
@@ -254,28 +254,51 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
             encoders[0].encode(pb, ptsUs: now, forceKeyframe: key)
         }
     }
-    // Sound: everything this Mac plays goes to the iMac as AUDIO_OUT, 10 ms (480 frames, 1920 bytes) per message.
+    // Sound goes to the iMac as AUDIO_OUT, 10 ms (480 frames, 1920 bytes) per message. Two sources:
+    //   device: the "iMac Speakers" output device of our audio driver. The user picks it like any output.
+    //   screen: everything this Mac plays, copied by ScreenCaptureKit (no driver, no choice).
     let imacPlaysSound = ((session?.imacHello["audio"] as? [String: Any])?["out"] as? Bool) == true
-    let sendAudio = session != nil && !o.flags.contains("no-audio") && (imacPlaysSound || o.flags.contains("audio"))
+    let wantAudio = session != nil && !o.flags.contains("no-audio") && (imacPlaysSound || o.flags.contains("audio"))
+    var audioSource = o.values["audio-source"] ?? "auto"
+    if audioSource == "auto" { audioSource = SpeakerDevice.isInstalled ? "device" : "screen" }
+    var speakers: SpeakerDevice?
     var audioPending = Data()
     let audioMessages = Counter()
-    if sendAudio {
-        capture.onAudio = { pcm in   // always called on the same queue
-            audioPending.append(pcm)
-            while audioPending.count >= 1920 {
-                try? session?.ctrl.send(.audioOut, payload: audioPending.prefix(1920))
-                audioPending.removeFirst(1920)
-                audioMessages.add()
-            }
+    let onPCM: (Data) -> Void = { pcm in   // always called on the same queue
+        audioPending.append(pcm)
+        while audioPending.count >= 1920 {
+            try? session?.ctrl.send(.audioOut, payload: audioPending.prefix(1920))
+            audioPending.removeFirst(1920)
+            audioMessages.add()
         }
+    }
+    if wantAudio && audioSource == "device" {
+        guard let dev = SpeakerDevice() else { throw Failure(description: "the iMac Speakers audio driver is not installed (mac/scripts/install-audio-driver.sh)") }
+        if SpeakerDevice.microphonePermission != .authorized {
+            let granted = await SpeakerDevice.requestMicrophonePermission()
+            if !granted { print("WARNING: no Microphone permission, so the iMac will stay silent. macOS asks for it because the app records from the iMac Speakers device. Allow it in System Settings > Privacy & Security > Microphone, then start again.") }
+        }
+        dev.onAudio = onPCM
+        dev.onVolume = { level, mute in
+            try? session?.ctrl.sendJSON(.audioVolume, ["volume": Double(level), "mute": mute])
+            print(String(format: "sound: iMac Speakers volume %.0f %%%@", level * 100, mute ? ", muted" : ""))
+        }
+        try dev.start()
+        speakers = dev
+        print("sound: sending what is played into \"iMac Speakers\"" + (dev.isDefaultOutput ? "" : " (pick it as the output in the sound menu to hear this Mac on the iMac)"))
+    } else if wantAudio {
+        capture.onAudio = onPCM
+        print("sound: sending everything this Mac plays (the iMac Speakers driver is not installed)")
     } else if session != nil && !imacPlaysSound {
         print("sound: the iMac says it cannot play sound yet (HELLO audio.out is false), so none is sent")
     }
-    if sendAudio, let v = o.values["volume"].flatMap({ Double($0) }) {   // the iMac's speaker level, 0 to 1
+    let sendAudio = wantAudio
+    let screenAudio = wantAudio && audioSource != "device"
+    if screenAudio, let v = o.values["volume"].flatMap({ Double($0) }) {   // the iMac's speaker level, 0 to 1
         try? session?.ctrl.sendJSON(.audioVolume, ["volume": max(0, min(1, v)), "mute": false])
     }
     try await capture.start(displayID: vd.displayID, width: cw, height: ch, fps: o.int("capture-fps", fps), queueDepth: o.int("queue-depth", 3),
-                            audio: sendAudio)
+                            audio: screenAudio)
     // Runs for --seconds (0 = until Ctrl-C, or until the session ends).
     signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
     let sources = [SIGINT, SIGTERM].map { sig -> DispatchSourceSignal in
@@ -291,11 +314,12 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
     sources.forEach { $0.cancel() }
     let ran = Date().timeIntervalSince(started)
     await capture.stop()
+    speakers?.stop()
     encoders.forEach { $0.flush() }
     ioQueue.sync {}
     injector?.releaseAll()
     mounter?.unmountAll()
-    if sendAudio { print(String(format: "sound sent to the iMac: %d messages of 10 ms = %.1f s (captured %.1f s)", audioMessages.take(), Double(capture.audioFrames) / 48000 - Double(audioPending.count) / 4 / 48000, Double(capture.audioFrames) / 48000)) }
+    if sendAudio { print(String(format: "sound sent to the iMac: %d messages of 10 ms = %.1f s (captured %.1f s)", audioMessages.take(), Double(capture.audioFrames + (speakers?.frames ?? 0)) / 48000 - Double(audioPending.count) / 4 / 48000, Double(capture.audioFrames + (speakers?.frames ?? 0)) / 48000)) }
     if let injector { print("input from the iMac: \(injector.keys) key events, \(injector.moves) pointer moves, \(injector.clicks) button events") }
     session?.close()
     files.forEach { try? $0.close() }
