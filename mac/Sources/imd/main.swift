@@ -132,6 +132,8 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
         c.hevc = o.values["codec"] == "hevc"
         c.preferSpeed = o.flags.contains("speed")
         c.realTime = !o.flags.contains("no-realtime")
+        if let kb = o.values["burst-kb"].flatMap({ Double($0) }) { c.burstBytes = Int(kb * 1000) / tiles.count }
+        c.burstWindow = o.double("burst-window", 0.05)
         c.expectedFps = o.values["expected-fps"].flatMap { Int($0) }
         if let m = o.values["power-efficiency"] { c.maximizePowerEfficiency = m == "on" }
         encoders.append(try H264Encoder(c))
@@ -141,11 +143,22 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
 
     var session: Session?
     let keyframeWanted = Flag()
+    let sentSinceStats = Counter()
     if let host = o.values["host"] {
         let s = try Session(host: host, port: UInt16(o.int("port", Int(Wire.port))), name: Host.current().localizedName ?? "Mac")
         print("iMac at \(s.ctrl.peer): \(String(data: try JSONSerialization.data(withJSONObject: s.imacHello, options: [.sortedKeys]), encoding: .utf8) ?? "")")
         s.onMessage = { h, p in
             if h.type == MsgType.videoRequestKeyframe.rawValue { keyframeWanted.set() }
+            if h.type == MsgType.videoStats.rawValue, let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] {
+                // Once a second: what the iMac did with what we sent.
+                let sent = sentSinceStats.take()
+                let decoded = (j["decoded"] as? Int) ?? 0
+                var line = "iMac: decoded \(decoded), dropped \(j["dropped"] ?? "?"), decode \(j["decode_ms"] ?? "?") ms, to screen \(j["present_ms"] ?? "?") ms | sent \(sent)"
+                // Safety net: we are sending and the iMac shows nothing, so its decoder has lost its place.
+                if decoded == 0 && sent > 0 { keyframeWanted.set(); line += "  → sending a keyframe unasked" }
+                print(line)
+                return
+            }
             print("← " + describe(h, p))
         }
         s.onEnd = { print("session ended: \($0)") }
@@ -182,7 +195,7 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
                     if !files.isEmpty { files[n].write(p.annexB) }
                     try? session?.sendVideo(tile: n, keyframe: p.keyframe, lastTile: n == picture.count - 1, ptsUs: p.ptsUs, data: p.annexB)
                 }
-                if session != nil { sendMs.add(Double(Wire.nowUs() - t0) / 1000) }
+                if session != nil { sendMs.add(Double(Wire.nowUs() - t0) / 1000); sentSinceStats.add() }
             }
         }
     }
@@ -234,6 +247,14 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
     print(String(format: "bitrate: %.1f Mbit/s; keyframes %d (largest %.0f kB), other frames %d (median %.1f kB, largest %.0f kB); encoder failures %d",
                  bytes * 8 / seconds / 1e6, keyBytes.count, keyBytes.percentile(100) / 1000, deltaBytes.count,
                  deltaBytes.percentile(50) / 1000, deltaBytes.percentile(100) / 1000, encoders.reduce(0) { $0 + $1.failures }))
+}
+
+/// Thread-safe counter that is read and reset together.
+final class Counter {
+    private var value = 0
+    private let lock = NSLock()
+    func add() { lock.lock(); value += 1; lock.unlock() }
+    func take() -> Int { lock.lock(); defer { value = 0; lock.unlock() }; return value }
 }
 
 /// Thread-safe one-shot flag.

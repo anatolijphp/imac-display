@@ -88,6 +88,20 @@ Real output of this encoder (scrolling text, harder than the iMac's synthetic cl
 - `STORAGE_ATTACHED` arriving before `CONFIG_ACK` and an `INPUT_KEY` after it are received and printed.
 - Writing one picture to the socket: 0.1 / 0.2 ms (loopback, so this says nothing about the cable).
 
+## 6. First run against the real iMac (over Wi-Fi, testing only)
+
+`imd pipeline --host imac-display.local --lodpi --points 1920x1080 --mbps 10`, receiver on `wlan0`, 2026-11-26.
+
+| Pictures per second | Result on the iMac (its own `VIDEO_STATS`) |
+|---|---|
+| 30 | **Works.** 28–30 decoded and shown every second for 20 s, 5 dropped in total. Decode 13–14 ms, arrival to screen 30–36 ms. |
+| 60 | **Does not work yet.** 2 pictures shown after each keyframe, then nothing. Two receiver bugs (a lost keyframe request; a queue limit that a keyframe always exceeds) and slow decoding inside the receiver; details in `docs/handoff.md`. |
+
+The MacBook side held 60.0 pictures per second for 25 s with a 6 ms encode time at this size. Whether the picture on the iMac looked right was not checked by a person yet.
+
+- `DataRateLimits` (to make keyframes smaller) is accepted by the low-latency encoder and has no effect: a 1080p keyframe stays at about 270 kB at 10 Mbit/s.
+- One 30 s run had a 6.3 s gap in the capture on the MacBook (1321 pictures instead of about 1800). It did not happen again in three later runs; cause unknown.
+
 ## Expected delay, not measured
 
 Adding up the parts for 4K: encode about 17 ms, decode on the iMac about 10 ms (104 pictures per second), then up to one refresh (17 ms) to show it. Roughly 30 to 45 ms from the MacBook drawing a picture to the iMac showing it, before any network delay. This is arithmetic from the numbers above, not a measurement; the real figure comes in M3.

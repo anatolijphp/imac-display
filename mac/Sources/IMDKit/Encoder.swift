@@ -19,6 +19,10 @@ public final class H264Encoder {
         public var realTime = true
         public var expectedFps: Int? = nil // what the encoder is told to expect; nil = fps
         public var maximizePowerEfficiency: Bool? = nil
+        /// Hard cap on the bytes of any `burstWindow` seconds (DataRateLimits). Keeps keyframes small:
+        /// a keyframe that takes several frame times to send and decode makes the receiver fall behind.
+        public var burstBytes: Int? = nil
+        public var burstWindow = 0.05
         public init(width: Int, height: Int, fps: Int, bitrate: Int) {
             self.width = width; self.height = height; self.fps = fps; self.bitrate = bitrate
         }
@@ -69,6 +73,9 @@ public final class H264Encoder {
         }
         if c.preferSpeed { set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, true, "PrioritizeEncodingSpeedOverQuality") }
         set(kVTCompressionPropertyKey_AverageBitRate, c.bitrate, "AverageBitRate")
+        if let b = c.burstBytes {
+            set(kVTCompressionPropertyKey_DataRateLimits, [NSNumber(value: b), NSNumber(value: c.burstWindow)] as CFArray, "DataRateLimits")
+        }
         set(kVTCompressionPropertyKey_ExpectedFrameRate, c.expectedFps ?? c.fps, "ExpectedFrameRate")
         // Keyframes only when asked for (first picture, CONFIG change, VIDEO_REQUEST_KEYFRAME).
         set(kVTCompressionPropertyKey_MaxKeyFrameInterval, 36000, "MaxKeyFrameInterval")
