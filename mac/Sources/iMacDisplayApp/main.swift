@@ -21,6 +21,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     private var stats = DisplaySession.Stats()
     private var lastProblem: String?
     private var installingDriver = false
+    private var nextAttempt = Date.distantPast   // after a failed start, wait longer before the next one
+    private var failures = 0
     private var timer: Timer?
 
     // Settings
@@ -115,7 +117,7 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     // MARK: connecting
 
     private func tick() {
-        guard enabled, session == nil, !connecting, !installingDriver else { return }
+        guard enabled, session == nil, !connecting, !installingDriver, Date() >= nextAttempt else { return }
         guard !useDisplay || DisplayCapture.hasPermission else { return }   // no picture without it; the menu says so
         guard let host = testingOverWiFi ? testingHostName : foundAddress else { return }
         connect(to: host)
@@ -144,6 +146,7 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
             do {
                 try await s.start()
                 connected = true
+                failures = 0
                 lastProblem = nil
                 stats = DisplaySession.Stats()
                 log("connected to \(host), sound: \(s.soundSource)")
@@ -151,6 +154,9 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
                 let text = "\(error)"
                 if lastProblem != text { log("could not connect to \(host): \(text)") }
                 lastProblem = text
+                // Each failed start may show and remove the extra display: back off instead of repeating every few seconds.
+                failures += 1
+                nextAttempt = Date().addingTimeInterval(min(60, Double(failures) * 10))
                 s.stop(reason: "could not start")
                 if session === s { session = nil }
             }
@@ -161,6 +167,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
 
     private func reconnect(_ why: String) {
         log(why)
+        failures = 0
+        nextAttempt = .distantPast
         session?.stop(reason: why)
     }
 

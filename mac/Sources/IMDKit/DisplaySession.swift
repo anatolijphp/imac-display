@@ -54,6 +54,9 @@ public final class DisplaySession {
     private var mounter: StorageMounter?
     private var speakers: SpeakerDevice?
     private var screenObserver: NSObjectProtocol?
+    private var lockObservers: [NSObjectProtocol] = []
+    /// The Mac's screen is locked: macOS lets nobody capture it, so no picture is sent until it is unlocked.
+    private var paused = false
     private var limitWidth = 3840, limitHeight = 2160
     private var screenAudio = false
     private var reconfiguring = false
@@ -112,7 +115,14 @@ public final class DisplaySession {
             }
         }
 
-        if c.useDisplay {
+        if c.useDisplay && Self.screenIsLocked {
+            // Connected while the screen is locked (for example right after waking up): everything
+            // but the picture starts now, the picture when the user unlocks.
+            paused = true
+            log("the screen is locked: the picture starts when it is unlocked")
+            if let px = display?.currentPixelSize { (streamWidth, streamHeight) = streamSize(for: px) }
+            try await configure(width: max(streamWidth, 1280), height: max(streamHeight, 720))
+        } else if c.useDisplay {
             try await startStream()
         } else {
             // Sound, keyboard, mouse and drives only. The receiver still wants a video size in CONFIG
@@ -120,6 +130,18 @@ public final class DisplaySession {
             try await configure(width: 1280, height: 720)
         }
         try speakers?.start()   // after the first CONFIG: the iMac starts its player on CONFIG
+
+        if c.useDisplay {
+            let center = DistributedNotificationCenter.default()
+            lockObservers = [
+                center.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in await self?.pause() }
+                },
+                center.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in await self?.resume() }
+                },
+            ]
+        }
 
         // The user changed the resolution in Display settings (or rearranged displays): follow.
         screenObserver = NotificationCenter.default.addObserver(
@@ -170,6 +192,14 @@ public final class DisplaySession {
             encoder.encode(pixelBuffer, ptsUs: Wire.nowUs(), forceKeyframe: key)
         }
         if screenAudio { capture.onAudio = { [weak self] in self?.pcm($0) } }
+        capture.onStop = { [weak self, weak capture] error in
+            // macOS ended the capture by itself (it does when the screen locks, and sometimes after sleep).
+            Task { @MainActor in
+                guard let self, let capture, self.capture === capture else { return }
+                self.log("the screen capture stopped (\(error.localizedDescription))")
+                await self.restartStream()
+            }
+        }
         // A new display takes a moment to become capturable.
         var lastError: Error = CaptureError("the extra display did not appear")
         for _ in 0..<20 {
@@ -208,20 +238,81 @@ public final class DisplaySession {
     }
 
     @MainActor private func displayChanged() async {
-        guard !isFinished, !reconfiguring, let vd = display, let pixels = vd.currentPixelSize else { return }
+        guard !isFinished, !reconfiguring, !paused, !Self.screenIsLocked,
+              let vd = display, let pixels = vd.currentPixelSize else { return }
         let (w, h) = streamSize(for: pixels)
         if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
         guard w != streamWidth || h != streamHeight else { return }
         reconfiguring = true
         log("resolution changed in Display settings")
-        await capture?.stop()
-        capture = nil
-        encoder?.flush()
-        encoder = nil
+        await stopStream()
         try? await Task.sleep(nanoseconds: 150_000_000)   // let the last pictures of the old size arrive first
-        do { try await startStream() } catch { finish("\(error)") }
+        await startStreamOrGiveUp()
         reconfiguring = false
         await displayChanged()   // in case it changed again meanwhile
+    }
+
+    /// Starts the picture; if that fails while the screen is locked it simply waits for the unlock,
+    /// otherwise it tries once more before ending the session.
+    @MainActor private func startStreamOrGiveUp() async {
+        for attempt in 1...2 {
+            if isFinished { return }
+            if Self.screenIsLocked { paused = true; return }
+            do { try await startStream(); return } catch {
+                if Self.screenIsLocked { paused = true; return }
+                if attempt == 2 { finish("\(error)"); return }
+                log("could not start the picture (\(error)); trying again")
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    @MainActor private func stopStream() async {
+        let old = capture
+        capture = nil            // first, so that its stop handler does not restart it
+        await old?.stop()
+        encoder?.flush()
+        encoder = nil
+    }
+
+    /// The capture ended by itself: start it again (or wait for the unlock).
+    @MainActor private func restartStream() async {
+        guard !isFinished, !reconfiguring, !paused else { return }
+        reconfiguring = true
+        await stopStream()
+        await startStreamOrGiveUp()
+        reconfiguring = false
+    }
+
+    /// The screen was locked. macOS does not let the lock screen be captured, and the last picture must
+    /// not stay on the iMac for everyone to read: send nothing, and make the iMac drop the picture.
+    @MainActor private func pause() async {
+        guard !isFinished, !paused, config.useDisplay else { return }
+        paused = true
+        while reconfiguring { try? await Task.sleep(nanoseconds: 50_000_000) }
+        guard !isFinished else { return }
+        log("screen locked: picture paused")
+        await stopStream()
+        // A CONFIG with no picture after it makes the receiver go black and then back to its waiting screen.
+        try? await configure(width: max(streamWidth, 1280), height: max(streamHeight, 720))
+    }
+
+    @MainActor private func resume() async {
+        guard !isFinished, paused else { return }
+        paused = false
+        while reconfiguring { try? await Task.sleep(nanoseconds: 50_000_000) }
+        guard !isFinished, capture == nil else { return }
+        log("screen unlocked: picture back on")
+        reconfiguring = true
+        try? await Task.sleep(nanoseconds: 300_000_000)   // the displays settle for a moment after the unlock
+        await startStreamOrGiveUp()
+        reconfiguring = false
+        await displayChanged()
+    }
+
+    /// True while the Mac shows its lock screen.
+    public static var screenIsLocked: Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
     }
 
     // MARK: messages from the iMac
@@ -274,6 +365,8 @@ public final class DisplaySession {
         lock.unlock()
         guard firstTime else { return }
         let capture = self.capture, display = self.display, observer = screenObserver
+        for o in lockObservers { DistributedNotificationCenter.default().removeObserver(o) }
+        lockObservers = []
         speakers?.stop()          // puts the Mac's sound output back and makes "iMac Speakers" disappear
         injector?.releaseAll()
         mounter?.unmountAll()
