@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run by plymouth-quit.service before it ends the boot splash: waits until the receiver has ended
+# it itself (it does when its first picture is on the screen), at most 12 seconds.
+grep -qE '(^| )(nomodeset|imacdisplay\.noreceiver)( |$)' /proc/cmdline && exit 0
+systemctl -q is-enabled imacdisplayd.service 2>/dev/null || exit 0
+n=0
+while [ $n -lt 60 ] && /usr/bin/plymouth --ping 2>/dev/null; do
+  sleep 0.2
+  n=$((n + 1))
+done
+exit 0

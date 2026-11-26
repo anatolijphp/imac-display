@@ -78,6 +78,7 @@ class Display {
     bool in(double px, double py) const { return px >= x && px < x + w && py >= y && py < y + h; }
   };
   void init_canvas();  // base_, the background field and dither tile, for w_ x h_
+  void draw_splash_base();  // base_ and field as the boot splash shows them: the laptop, no text
   void render_base(const Status& s);
   void redraw();  // the current status again, after a hover or dialog change
   Hit hit_test() const;

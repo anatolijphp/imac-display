@@ -10,9 +10,8 @@ StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=-/etc/imacdisplayd.conf
-# The boot splash steps aside but leaves its picture up until the waiting screen replaces it (same
-# look, so there is no flash). Without Plymouth running this does nothing.
-ExecStartPre=-/usr/bin/plymouth quit --retain-splash
+# The boot splash: imacdisplayd takes the screen over from Plymouth itself (display.cpp, open()) and
+# ends it once its own picture is on. plymouth-quit.service waits for that (see its drop-in).
 ExecStart=/usr/local/bin/imacdisplayd $IMACDISPLAYD_ARGS
 Restart=always
 RestartSec=2

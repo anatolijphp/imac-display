@@ -226,6 +226,10 @@ bool Display::open() {
   }
   closedir(d);
   if (!conn) return false;
+  // The boot splash (Plymouth) still owns the screen when we start. "deactivate" makes it let go of
+  // the screen and leave its picture up; it is ended further down, once our own picture is on.
+  const bool splash = access("/run/plymouth/pid", F_OK) == 0 &&
+                      system("/usr/bin/plymouth deactivate >/dev/null 2>&1") == 0;
   if (drmSetMaster(fd) != 0) {  // someone else (a test viewer) owns the screen
     drmModeFreeConnector(conn);
     drmModeFreeResources(res);
@@ -273,7 +277,11 @@ bool Display::open() {
     return false;
   }
   fd_ = fd;
-  memset(map_, 0, size_);
+  // The first picture is the one the boot splash shows (the waiting screen without its text), so
+  // taking the screen over from the splash shows no black frame. Black was 2 s at boot before.
+  init_canvas();
+  draw_splash_base();
+  compose(map_, pitch_);
   saved_crtc_ = drmModeGetCrtc(fd_, crtc_id_);
   mode_ = new drmModeModeInfo(mode);
   if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, &mode) != 0) {
@@ -281,9 +289,14 @@ bool Display::open() {
     close();
     return false;
   }
+  if (splash) {
+    // Our picture is on: the splash can go, without touching the screen. Before the tty is
+    // switched below, in case Plymouth puts it back into text mode on its way out.
+    if (system("/usr/bin/plymouth quit --retain-splash >/dev/null 2>&1") != 0) {}
+    fprintf(stderr, "display: took the screen over from the boot splash\n");
+  }
   // If we run on a VT (systemd TTYPath), switch it to graphics mode: the text console stops drawing.
   if (isatty(0) && ioctl(0, KDSETMODE, KD_GRAPHICS) == 0) tty_ = 0;
-  init_canvas();
   px_ = w_ / 2.0;
   py_ = h_ * 0.62;
   dialog_ = Dialog::None;
@@ -1447,17 +1460,25 @@ void Display::init_canvas() {
   start_us_ = uint64_t(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
 }
 
-bool Display::render_splash(const std::string& dir, int w, int h) {
-  w_ = w;
-  h_ = h;
-  init_canvas();
+void Display::draw_splash_base() {
   const double s = h_ / 2160.0, cx = w_ / 2.0, icon_cy = h_ * 0.40;
   cairo_t* cr = cairo_create(base_);
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
   draw_laptop(cr, cx, icon_cy, s, false);
   cairo_destroy(cr);
   cairo_surface_flush(base_);
   content_spans();
   update_field(0.0);  // the shadows where the waiting screen starts them
+}
+
+bool Display::render_splash(const std::string& dir, int w, int h) {
+  w_ = w;
+  h_ = h;
+  init_canvas();
+  const double s = h_ / 2160.0, icon_cy = h_ * 0.40;
+  draw_splash_base();
   cairo_surface_t* img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
   cairo_surface_flush(img);
   compose(cairo_image_surface_get_data(img), cairo_image_surface_get_stride(img));
@@ -1470,7 +1491,7 @@ bool Display::render_splash(const std::string& dir, int w, int h) {
   const int r = int(9 * s), dy = int(ty + 150 * s) + r + 2;
   const int d = 2 * r + 4;
   cairo_surface_t* dot = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, d, d);
-  cr = cairo_create(dot);
+  cairo_t* cr = cairo_create(dot);
   cairo_set_source_rgb(cr, 1, 1, 1);
   cairo_arc(cr, d / 2.0, d / 2.0, r, 0, 2 * M_PI);
   cairo_fill(cr);
