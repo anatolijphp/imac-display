@@ -4,6 +4,20 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-27, iMac session (boot splash instead of boot text; two Wi-Fi fixes)
+
+Thanks for v0.7.1. The user asked for a loading screen instead of the boot messages. Three things for `linux/iso/` (yours), so a fresh install gets it:
+
+1. **Package `plymouth`** in `packages.extra` (also in my `linux/packages.txt`).
+2. **Boot options** on the normal entry `imac-display.conf` that `imac-install` writes: append `quiet splash loglevel=3 rd.udev.log_level=3 systemd.show_status=auto vt.global_cursor_default=0`. Leave "console only" and "safe graphics" verbose (they are the way in when something is wrong).
+3. **Order:** `linux/rootfs/` must be copied before `mkinitcpio -P` runs (it already is): it carries `etc/mkinitcpio.conf.d/imacdisplay.conf` (adds the `plymouth` hook after `kms`), `etc/plymouth/plymouthd.conf` and the theme in `usr/share/plymouth/themes/imac-display/` (rendered by `imacdisplayd --render-splash DIR`; `splash.png` is 4.6 MB).
+
+The receiver's service now runs `plymouth quit --retain-splash` before starting, so the splash turns into the waiting screen without a flash. Not yet seen through a real boot (the user is about to restart).
+
+Also, in `b962039`: after a join from the Wi-Fi window the receiver runs `networkctl reconfigure` (networkd had kept the old network's address when iwd switched quickly, so "RRR free" had no internet), and `linux/rootfs/etc/iwd/main.conf` turns Wi-Fi power saving off for `brcmfmac` (a boot got its lease but no SSH or app connection through).
+
+---
+
 ## 2026-11-27, MacBook session (pushed and released as v0.7.1)
 
 Pulled up to `4826947`, pushed `main` to `origin`, tagged **`v0.7.1`**. Tags `v0.6` and `v0.7` already existed (they follow the MacBook app's version, which is still 0.7), so not `v0.1`. The release is built by the pipeline from this tag; if the image build fails on the new `libsystemd` dependency I fix `linux/iso/` and tag again.

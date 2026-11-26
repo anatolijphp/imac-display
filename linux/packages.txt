@@ -3,3 +3,4 @@
 libevdev        # receiver: read and grab keyboards and pointers
 nlohmann-json   # receiver: JSON for HELLO/CONFIG (build-time, header only)
 samba           # receiver: share USB drives with the MacBook over the cable (run by imacdisplayd, not as a service)
+plymouth        # boot splash in the waiting screen's look (theme in linux/rootfs/usr/share/plymouth/themes/imac-display)
