@@ -159,7 +159,12 @@ public final class SpeakerDevice {
             AudioObjectAddPropertyListenerBlock(dev, &a, control, block)
         }
         reportVolume()
-        guard selectWhileRunning, let old = Self.defaultOutput, old != dev, let oldUID = Self.uid(of: old) else { return }
+        guard selectWhileRunning else { return }
+        // Which output is selected now is asked from a separate process: this process's own answer can be
+        // out of date. Seen when the app was quit and started again within seconds: it still saw
+        // "iMac Speakers" selected, did nothing, and the sound stayed on the Mac's own speakers.
+        let oldUID = Self.helper(["--print-default-output"])
+        guard !oldUID.isEmpty, oldUID != Self.speakersUID else { return }
         // macOS needs a moment after a device appears before it can become the output. Switch, look, repeat.
         for attempt in 1...6 {
             for _ in 0..<(attempt == 1 ? 12 : 8) { if stopping { return }; Thread.sleep(forTimeInterval: 0.05) }

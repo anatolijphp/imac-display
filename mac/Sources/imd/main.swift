@@ -46,6 +46,7 @@ usage: imd <command> [options]
       Change the resolution of the app's extra display, as Display settings would (for testing).
 
   hello     --host NAME [--port P] [--seconds N]
+  find      [--seconds N]     look for the iMac the way the app does; prints where it answers
       Open a session with the iMac without video and print what it sends.
 
 Testing only: --host connects to a named machine (for example imac-display.local over Wi-Fi)
@@ -119,6 +120,16 @@ func setMode(_ o: Options) throws {
     s.start()
     try await Task.sleep(nanoseconds: UInt64(o.double("seconds", 10) * 1e9))
     s.close()
+}
+
+@MainActor func find(_ o: Options) async throws {
+    let finder = IMacFinder()
+    finder.onChange = { found in
+        print(found.map { "found: \($0.address) (\($0.thunderbolt ? "Thunderbolt" : "not Thunderbolt"))" } ?? "not found")
+    }
+    finder.start()
+    try await Task.sleep(nanoseconds: UInt64(o.double("seconds", 6) * 1e9))
+    finder.stop()
 }
 
 func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
@@ -411,6 +422,7 @@ Task { @MainActor in
         case "vdisplay": try await vdisplay(o)
         case "pipeline": try await pipeline(o)
         case "hello": try await hello(o)
+        case "find": try await find(o)
         case "setmode": try setMode(o)
         default: print(usage); exit(arguments.isEmpty ? 0 : 2)
         }

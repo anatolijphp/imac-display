@@ -5,10 +5,10 @@ The wire format between the MacBook app and `imacdisplayd` on the iMac. Draft un
 ## Link and discovery
 
 - The link is Thunderbolt networking: `thunderbolt0` on the iMac, `bridge0` on the MacBook, IPv4 link-local (169.254.0.0/16) and IPv6 link-local addresses.
-- The iMac listens on TCP port **7500**, bound to the Thunderbolt interface only.
-- The iMac advertises DNS-SD service `_imacdisplay._tcp` on that interface. TXT records: `proto=0`, `model=iMac17,1`, `panel=5120x2880`.
-- The MacBook browses for the service on `bridge0` and connects when it appears. There is no authentication in version 0: the link is a point-to-point cable.
-- **Testing only:** `imacdisplayd --iface wlan0` listens on Wi-Fi, and the Mac side can be told to connect to a named host (`imd … --host imac-display.local`; the app gets the same as a hidden debug setting). Thunderbolt stays the only link of the product.
+- The iMac listens on TCP port **7500** on one link at a time: the Thunderbolt interface by default, or Wi-Fi (`wlan0`) when that is chosen with the switch on its waiting screen. Wi-Fi is for testing.
+- The iMac advertises DNS-SD service `_imacdisplay._tcp` on both links, whichever it listens on. TXT records: `proto=0`, `model=iMac17,1`, `panel=5120x2880`.
+- The MacBook browses for the service, tries port 7500 on every link the service is seen on (Thunderbolt, `bridge0`, first; on each link IPv4 before IPv6) and connects where it answers. It has no link setting of its own. When a session ends or a connection fails it looks again, so it follows the iMac's switch. There is no authentication in version 0: the product's link is a point-to-point cable.
+- **Development tool:** `imd … --host NAME` connects to a named host or address directly; `imd find` shows what the browsing finds.
 
 ## Connections
 

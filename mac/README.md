@@ -9,7 +9,7 @@ The MacBook half of `PROTOCOL.md`. **The user installs exactly one thing: `iMac 
 
 A menu-bar icon, no windows. It:
 
-- looks for the iMac on the Thunderbolt link (`_imacdisplay._tcp`) and connects by itself; "Testing: connect over Wi-Fi" in its menu connects to `imac-display.local` instead;
+- looks for the iMac (`_imacdisplay._tcp`) and connects by itself. Which link is used is chosen **on the iMac**, with the Thunderbolt / Wi-Fi switch on its waiting screen; the app tries each link the iMac is seen on, Thunderbolt first, and uses the one that answers. The menu says which ("Connected to the iMac over Thunderbolt" or "over Wi-Fi (testing)"); over Wi-Fi the bit rate is capped at 20 Mbit/s;
 - adds the extra display, sends picture and sound, takes the iMac's keyboard, mouse and USB drives;
 - **resolution is chosen in macOS's Display settings**, like for any monitor (2560×1440 down to 1280×720, Retina and not). The stream follows the choice while connected; the app has no resolution setting of its own. The bit rate follows the picture size (about 10 Mbit/s at 1920×1080, 40 at 3840×2160; at most 20 over Wi-Fi);
 - carries the "iMac Speakers" sound device inside (`Contents/Resources/iMacDisplayAudio.driver`) and installs or updates it itself, with macOS's administrator password dialog;

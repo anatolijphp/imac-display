@@ -6,7 +6,6 @@ import AVFoundation
 import IMDKit
 import ServiceManagement
 
-let testingHostName = "imac-display.local"
 let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
 
 @MainActor final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -17,7 +16,9 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     private var session: DisplaySession?
     private var connecting = false
     private var connected = false
-    private var foundAddress: String?
+    private var found: IMacFinder.Found?        // where the iMac answers right now
+    private var overThunderbolt = true          // the link of the current session
+    private var lastFoundLogged: IMacFinder.Found?
     private var stats = DisplaySession.Stats()
     private var lastProblem: String?
     private var installingDriver = false
@@ -29,7 +30,6 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     private var useDisplay: Bool { get { defaults.object(forKey: "useDisplay") as? Bool ?? true } set { defaults.set(newValue, forKey: "useDisplay") } }
     private var useSound: Bool { get { defaults.object(forKey: "useSound") as? Bool ?? true } set { defaults.set(newValue, forKey: "useSound") } }
     private var enabled: Bool { useDisplay || useSound }
-    private var testingOverWiFi: Bool { get { defaults.bool(forKey: "testingOverWiFi") } set { defaults.set(newValue, forKey: "testingOverWiFi") } }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem.menu = menu
@@ -40,9 +40,14 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         checkDriver()
         Task { await checkPermissions() }
 
-        finder.onChange = { [weak self] address in
-            self?.foundAddress = address
-            self?.log(address.map { "iMac found on the Thunderbolt link at \($0)" } ?? "iMac no longer on the Thunderbolt link")
+        // Which link is used is chosen on the iMac (the switch on its waiting screen); the app follows.
+        finder.onChange = { [weak self] found in
+            guard let self else { return }
+            if let found, found != self.lastFoundLogged {
+                self.log("iMac found at \(found.address) (\(found.thunderbolt ? "Thunderbolt" : "Wi-Fi, for testing"))")
+                self.lastFoundLogged = found
+            }
+            self.found = found
         }
         finder.start()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -119,15 +124,17 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
     private func tick() {
         guard enabled, session == nil, !connecting, !installingDriver, Date() >= nextAttempt else { return }
         guard !useDisplay || DisplayCapture.hasPermission else { return }   // no picture without it; the menu says so
-        guard let host = testingOverWiFi ? testingHostName : foundAddress else { return }
-        connect(to: host)
+        guard let found else { return }
+        connect(to: found)
     }
 
-    private func connect(to host: String) {
+    private func connect(to found: IMacFinder.Found) {
+        let host = found.address
+        overThunderbolt = found.thunderbolt
         var c = DisplaySession.Config(host: host, macName: Host.current().localizedName ?? "Mac")
         c.useDisplay = useDisplay
         c.useSound = useSound
-        c.maxBitrate = testingOverWiFi ? 20_000_000 : 40_000_000   // Wi-Fi here carries about 65 Mbit/s
+        c.maxBitrate = found.thunderbolt ? 40_000_000 : 20_000_000   // Wi-Fi here does not carry 40 (docs/mac-spikes.md, section 7)
         let s = DisplaySession(c)
         s.log = { [weak self] line in Task { @MainActor in self?.log(line) } }
         s.onStats = { [weak self] st in Task { @MainActor in self?.stats = st } }
@@ -137,6 +144,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
                 self.log("session ended: \(reason)")
                 self.session = nil
                 self.connected = false
+                self.found = nil
+                self.finder.refresh()   // the iMac may have been switched to the other link
                 self.updateIcon()
             }
         }
@@ -159,6 +168,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
                 nextAttempt = Date().addingTimeInterval(min(60, Double(failures) * 10))
                 s.stop(reason: "could not start")
                 if session === s { session = nil }
+                self.found = nil
+                finder.refresh()
             }
             connecting = false
             updateIcon()
@@ -185,7 +196,7 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         }
 
         if connected, let s = session {
-            info("Connected to the iMac" + (testingOverWiFi ? " over Wi-Fi (testing)" : ""))
+            info("Connected to the iMac over " + (overThunderbolt ? "Thunderbolt" : "Wi-Fi (testing)"))
             if useDisplay { info("Display: \(s.desktopWidth) × \(s.desktopHeight), \(stats.decoded) pictures per second") }
             if useSound {
                 switch s.soundSource {
@@ -200,10 +211,8 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
             info("Waiting for the Screen Recording permission")
         } else if connecting {
             info("Connecting to the iMac…")
-        } else if testingOverWiFi {
-            info("Looking for \(testingHostName) on Wi-Fi…")
         } else {
-            info(foundAddress == nil ? "Looking for the iMac on the Thunderbolt cable…" : "iMac found, connecting…")
+            info(found == nil ? "Looking for the iMac…" : "iMac found, connecting…")
         }
         if !connected, let p = lastProblem { info("Last problem: \(p.prefix(90))") }
         menu.addItem(.separator())
@@ -219,7 +228,6 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         }
 
         _ = item("Open at Login", #selector(toggleLogin), checked: SMAppService.mainApp.status == .enabled)
-        _ = item("Testing: connect over Wi-Fi", #selector(toggleTesting), checked: testingOverWiFi)
         _ = item("Show Log", #selector(showLog))
         menu.addItem(.separator())
         _ = item("Quit iMac Display", #selector(quit))
@@ -244,11 +252,6 @@ let driverInstallPath = "/Library/Audio/Plug-Ins/HAL/iMacDisplayAudio.driver"
         useSound.toggle()
         reconnect(useSound ? "sound switched on" : "sound switched off")
         updateIcon()
-    }
-    @objc private func toggleTesting() {
-        testingOverWiFi.toggle()
-        lastProblem = nil
-        reconnect("link changed")
     }
     @objc private func toggleLogin() {
         do {
