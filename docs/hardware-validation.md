@@ -12,7 +12,6 @@ Status is one of: pass, partial, fail, not tested.
 | A3 5K panel | not tested | |
 | A4 Video decode | not tested | |
 | A5 Sound | not tested | |
-| A6 Internal drive | not tested | |
 
 **Decision:** (go / no-go, date, and what any "partial" means for the user)
 
@@ -23,6 +22,7 @@ Status is one of: pass, partial, fail, not tested.
 - GPU (chip, marketing name, driver bound):
 - Intel graphics visible:
 - Wi-Fi card and driver:
+- Internal drives (SSD, hard disk, Fusion) and which one Linux is on:
 - Kernel and boot-menu entry used:
 
 ## A2. Thunderbolt networking
@@ -63,12 +63,6 @@ Status is one of: pass, partial, fail, not tested.
 - Headphone jack:
 - Microphone:
 - Settings or quirks needed:
-
-## A6. Internal drive
-
-- Drives and type (SSD, hard disk, Fusion):
-- Partition layout:
-- Free space reported by macOS:
 
 ## Other findings
 

@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+# Installs this system (Arch Linux + Claude Code + the project repo) onto the iMac's
+# internal drive, next to macOS. No internet needed: it copies the stick's own system.
+#
+# It only ever writes to two partitions that the user created in macOS Disk Utility:
+#     LINUXBOOT   boot partition (FAT32, 300 MB or more)
+#     LINUX       system partition (20 GB or more)
+# It never creates, deletes, moves or resizes partitions. The only change to the
+# partition table is the type label of those two partitions.
+set -euo pipefail
+
+BOOT_LABEL=LINUXBOOT
+ROOT_LABEL=LINUX
+MIN_BOOT_BYTES=$((300 * 1000 * 1000))
+MIN_ROOT_BYTES=$((20 * 1000 * 1000 * 1000))
+SRC=/run/archiso/airootfs
+T=/mnt/imac-target
+BUNDLE=/usr/share/imac-display/imac-display.bundle
+NEW_HOSTNAME=imac-display
+LOG=/tmp/imac-install.log
+GUID_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+GUID_LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+
+say() { echo "imac-install: $*"; }
+die() { echo >&2; echo "imac-install: $*" >&2; exit 1; }
+
+how_to_partition() {
+  cat >&2 <<'EOF'
+
+  The two Linux partitions have to be made in macOS first, because only macOS
+  can safely shrink its own disk:
+
+    1. Start the iMac in macOS. Make a Time Machine backup.
+    2. Open Disk Utility. Menu View > Show All Devices.
+    3. Select the internal drive (the top entry), click Partition, then "+",
+       then "Add Partition". Create two, both with format "MS-DOS (FAT)":
+           LINUXBOOT    1 GB
+           LINUX        60 GB or more (20 GB is the minimum)
+    4. Click Apply, wait until it finishes, then boot this stick again.
+EOF
+}
+
+# --- preconditions ------------------------------------------------------------------
+[ "$(id -u)" = 0 ] || die "run this as root"
+[ -d "$SRC" ] || die "this only runs from the installer stick (no $SRC here)"
+[ -d /sys/firmware/efi ] || die "the stick was not started in UEFI mode"
+
+# Finds the one partition with the given label that is not on a USB device.
+find_part() {
+  local label="$1" name lbl dev parent tran found=()
+  while read -r name lbl; do
+    [ "${lbl:-}" = "$label" ] || continue
+    dev="/dev/$name"
+    parent="$(lsblk -ndo PKNAME "$dev" 2>/dev/null || true)"
+    [ -n "$parent" ] || continue                      # a whole disk, not a partition
+    tran="$(lsblk -ndo TRAN "/dev/$parent" 2>/dev/null || true)"
+    [ "$tran" = "usb" ] && continue                   # never the stick or another USB drive
+    found+=("$dev")
+  done < <(lsblk -rno NAME,LABEL)
+  if [ "${#found[@]}" -eq 0 ]; then
+    echo >&2; echo "imac-install: no partition named $label found on the internal drive." >&2
+    how_to_partition
+    exit 1
+  fi
+  [ "${#found[@]}" -eq 1 ] || die "more than one partition is named $label (${found[*]}); rename or remove the extra one in macOS"
+  echo "${found[0]}"
+}
+
+BOOT_DEV="$(find_part "$BOOT_LABEL")"
+ROOT_DEV="$(find_part "$ROOT_LABEL")"
+[ "$BOOT_DEV" != "$ROOT_DEV" ] || die "LINUXBOOT and LINUX are the same partition"
+
+check_part() {
+  local dev="$1" label="$2" min="$3" fstype size
+  fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
+  case "$fstype" in
+    vfat|exfat|ext4|"") ;;
+    *) die "$dev ($label) holds a '$fstype' filesystem. Expected an empty MS-DOS (FAT) partition from Disk Utility; refusing to erase it." ;;
+  esac
+  size="$(lsblk -bndo SIZE "$dev")"
+  [ "$size" -ge "$min" ] || die "$dev ($label) is too small: $((size / 1000000)) MB, needs at least $((min / 1000000)) MB"
+  if findmnt -rn -S "$dev" >/dev/null 2>&1; then
+    die "$dev ($label) is mounted; unmount it first"
+  fi
+}
+check_part "$BOOT_DEV" "$BOOT_LABEL" "$MIN_BOOT_BYTES"
+check_part "$ROOT_DEV" "$ROOT_LABEL" "$MIN_ROOT_BYTES"
+
+BOOT_DISK="/dev/$(lsblk -ndo PKNAME "$BOOT_DEV")"
+ROOT_DISK="/dev/$(lsblk -ndo PKNAME "$ROOT_DEV")"
+
+# --- show the plan and ask ----------------------------------------------------------
+echo
+echo "  Internal drives as they are now:"
+echo
+lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTTYPENAME "$ROOT_DISK" | sed 's/^/    /'
+if [ "$BOOT_DISK" != "$ROOT_DISK" ]; then
+  lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTTYPENAME "$BOOT_DISK" | sed 's/^/    /'
+fi
+echo
+echo "  These two partitions will be ERASED and Linux installed on them:"
+echo "    $BOOT_DEV   $BOOT_LABEL   $(lsblk -ndo SIZE "$BOOT_DEV")"
+echo "    $ROOT_DEV   $ROOT_LABEL   $(lsblk -ndo SIZE "$ROOT_DEV")"
+echo
+echo "  Nothing else is changed. macOS and its data stay as they are."
+echo "  Make sure you have a Time Machine backup before you continue."
+echo
+read -r -p "  Type INSTALL (capital letters) to continue, anything else to stop: " answer
+[ "$answer" = "INSTALL" ] || die "stopped; nothing was changed"
+
+exec > >(tee -a "$LOG") 2>&1
+cleanup() {
+  local code=$?
+  if [ "$code" -ne 0 ]; then
+    echo
+    echo "imac-install: FAILED (exit code $code). Log: $LOG"
+    echo "imac-install: macOS was not touched. Fix the cause and run imac-install again."
+  fi
+  umount -R "$T" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- format ---------------------------------------------------------------------------
+say "formatting $BOOT_DEV (FAT32) and $ROOT_DEV (ext4)"
+wipefs -q -a "$BOOT_DEV" "$ROOT_DEV"
+mkfs.vfat -F 32 -n "$BOOT_LABEL" "$BOOT_DEV" >/dev/null
+mkfs.ext4 -q -F -L "$ROOT_LABEL" "$ROOT_DEV"
+
+# Mark the partitions as "EFI System" and "Linux filesystem". Without this macOS
+# shows a "disk not readable, initialise?" dialog for the Linux partition at login.
+set_type() {
+  local dev="$1" guid="$2" disk partn
+  disk="/dev/$(lsblk -ndo PKNAME "$dev")"
+  partn="$(lsblk -ndo PARTN "$dev" 2>/dev/null || true)"
+  if [ -n "$partn" ] && sfdisk --part-type "$disk" "$partn" "$guid" >/dev/null 2>&1; then
+    say "partition type of $dev set"
+  else
+    say "WARNING: could not set the partition type of $dev (the install still works; macOS may offer to initialise the partition: always choose Ignore)"
+  fi
+}
+set_type "$BOOT_DEV" "$GUID_ESP"
+set_type "$ROOT_DEV" "$GUID_LINUX"
+udevadm settle
+
+ROOT_UUID="$(blkid -o value -s UUID "$ROOT_DEV")"
+BOOT_UUID="$(blkid -o value -s UUID "$BOOT_DEV")"
+
+# --- copy the system ------------------------------------------------------------------
+mkdir -p "$T"
+mount "$ROOT_DEV" "$T"
+mkdir -p "$T/boot"
+mount "$BOOT_DEV" "$T/boot"
+
+say "copying the system (several minutes from a USB 2.0 stick)"
+rsync -aAXH --info=progress2 --exclude='/boot/*' "$SRC/" "$T/"
+
+# --- turn the copied live system into a normal installed one ----------------------------
+say "configuring the installed system"
+
+KVER="$(ls "$T/usr/lib/modules" | head -1)"
+[ -f "$T/usr/lib/modules/$KVER/vmlinuz" ] || die "kernel image not found in the copied system"
+install -m 644 "$T/usr/lib/modules/$KVER/vmlinuz" "$T/boot/vmlinuz-linux"
+
+# Standard initramfs instead of the live-medium one.
+rm -f "$T/etc/mkinitcpio.conf.d/archiso.conf"
+cat > "$T/etc/mkinitcpio.d/linux.preset" <<'EOF'
+# mkinitcpio preset file for the 'linux' package
+ALL_kver="/boot/vmlinuz-linux"
+PRESETS=('default')
+default_image="/boot/initramfs-linux.img"
+EOF
+
+# Live-medium leftovers.
+rm -f "$T/etc/systemd/journald.conf.d/volatile-storage.conf"
+for unit in pacman-init.service choose-mirror.service livecd-talk.service \
+            livecd-alsa-unmuter.service etc-pacman.d-gnupg.mount; do
+  rm -f "$T/etc/systemd/system/$unit"
+  find "$T/etc/systemd/system" -type l -name "$unit" -delete
+done
+for unit in hv_fcopy_daemon hv_kvp_daemon hv_vss_daemon vboxservice vmtoolsd \
+            vmware-vmblock-fuse ModemManager; do
+  find "$T/etc/systemd/system" -type l -name "$unit.service" -delete
+done
+rm -f "$T/root/.automated_script.sh" "$T/root/.zlogin"
+rm -f "$T/usr/local/bin/choose-mirror" "$T/usr/local/bin/Installation_guide" \
+      "$T/usr/local/bin/livecd-sound" "$T/usr/local/bin/imac-install"
+
+echo "$NEW_HOSTNAME" > "$T/etc/hostname"
+
+cat > "$T/etc/fstab" <<EOF
+# <device>                                <dir>  <type>  <options>                    <dump> <pass>
+UUID=$ROOT_UUID  /      ext4    rw,relatime                  0      1
+UUID=$BOOT_UUID                            /boot  vfat    rw,relatime,fmask=0077,dmask=0077  0      2
+EOF
+
+# SSH: key login only (the stick allowed password login for root).
+cat > "$T/etc/ssh/sshd_config.d/10-imac-display.conf" <<'EOF'
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+EOF
+rm -f "$T/etc/ssh/sshd_config.d/10-archiso.conf"
+
+cat > "$T/etc/motd" <<'EOF'
+
+  iMac Display  (Arch Linux on the iMac's internal drive)
+  Project: /root/imac-display
+
+  Wi-Fi             iwctl station wlan0 connect "NETWORK NAME"
+  From the MacBook  ssh root@imac-display.local
+  Claude            cd /root/imac-display && claude
+                    then tell it: follow docs/IMAC-BUILD.md
+
+  Back to macOS: restart and hold the Option key.
+
+EOF
+
+# Project repo.
+if [ -f "$BUNDLE" ]; then
+  git clone -q "$BUNDLE" "$T/root/imac-display"
+  git -C "$T/root/imac-display" remote rename origin seed
+  say "project repo installed at /root/imac-display"
+else
+  say "WARNING: no project bundle on the stick ($BUNDLE)"
+fi
+
+# Wi-Fi networks already joined in this session carry over.
+if ls /var/lib/iwd/*.psk /var/lib/iwd/*.open >/dev/null 2>&1; then
+  mkdir -p "$T/var/lib/iwd"
+  cp -a /var/lib/iwd/. "$T/var/lib/iwd/"
+  say "known Wi-Fi networks copied"
+fi
+
+arch-chroot "$T" systemd-machine-id-setup >/dev/null
+arch-chroot "$T" systemctl enable systemd-timesyncd.service >/dev/null 2>&1 || true
+say "building the boot image"
+arch-chroot "$T" mkinitcpio -P
+say "setting up the package manager's keys"
+arch-chroot "$T" bash -c 'pacman-key --init && pacman-key --populate archlinux' >/dev/null 2>&1 \
+  || say "WARNING: package keys were not initialised; run 'pacman-key --init && pacman-key --populate' after the first boot"
+
+# --- boot loader ------------------------------------------------------------------------
+# systemd-boot at the fallback path. No firmware (NVRAM) entries are written; the Mac's
+# own boot picker (hold Option) lists the partition as "EFI Boot".
+say "installing the boot loader"
+EFI_SRC="$T/usr/lib/systemd/boot/efi/systemd-bootx64.efi"
+install -D -m 644 "$EFI_SRC" "$T/boot/EFI/BOOT/BOOTX64.EFI"
+install -D -m 644 "$EFI_SRC" "$T/boot/EFI/systemd/systemd-bootx64.efi"
+
+# Carry over the graphics and firmware parameters this session was started with.
+EXTRA=""
+for tok in $(cat /proc/cmdline); do
+  case "$tok" in
+    nomodeset|amdgpu.*|radeon.*|acpi_osi=*|pcie_ports=*) EXTRA="$EXTRA $tok" ;;
+  esac
+done
+BASE_OPTS="root=UUID=$ROOT_UUID rw fbcon=font:TER16x32"
+
+mkdir -p "$T/boot/loader/entries"
+cat > "$T/boot/loader/loader.conf" <<'EOF'
+default imac-display.conf
+timeout 3
+editor  yes
+EOF
+write_entry() {  # file, title, options
+  cat > "$T/boot/loader/entries/$1" <<EOF
+title   $2
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options $3
+EOF
+}
+write_entry imac-display.conf        "iMac Display (Arch Linux)" "$BASE_OPTS$EXTRA"
+write_entry imac-display-oldgpu.conf "iMac Display, older Radeon GPU (R9 M380 or M390)" \
+  "$BASE_OPTS amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0"
+write_entry imac-display-safe.conf   "iMac Display, safe graphics (if the screen stays black)" "$BASE_OPTS nomodeset"
+
+[ -f "$T/boot/initramfs-linux.img" ] || die "the boot image was not created"
+
+# --- done -------------------------------------------------------------------------------
+mkdir -p "$T/var/log"
+cp "$LOG" "$T/var/log/imac-install.log" 2>/dev/null || true
+sync
+umount -R "$T"
+trap - EXIT
+
+cat <<'EOF'
+
+  Linux is installed.
+
+  1. Type: poweroff      and pull out the USB stick.
+  2. Switch the iMac on while holding the Option key.
+  3. Choose "EFI Boot". (macOS is still the default when you do not hold Option.)
+  4. Follow the steps shown on screen after it starts.
+
+EOF

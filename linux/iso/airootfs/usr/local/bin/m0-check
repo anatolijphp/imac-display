@@ -4,7 +4,7 @@
 #
 # Usage: m0-check [OUTPUT_FILE]
 stamp="$(date +%Y%m%d-%H%M%S)"
-out="${1:-/persist/imac-display/docs/m0-facts-$stamp.txt}"
+out="${1:-/root/imac-display/docs/m0-facts-$stamp.txt}"
 [ -d "$(dirname "$out")" ] || out="/root/m0-facts-$stamp.txt"
 
 sec() { printf '\n===== %s =====\n' "$1"; }

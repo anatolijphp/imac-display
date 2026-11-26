@@ -1,21 +1,21 @@
 
-  iMac Display live system  (Arch Linux + Claude Code)
-  Runs from the USB stick. The iMac's internal drive is not touched.
+  iMac Display installer  (Arch Linux + Claude Code)
 
-  1. Get internet. Pick one:
-       Wi-Fi     iwctl station wlan0 connect "NETWORK NAME"
-                 (other interface name? see: iwctl station list)
-       iPhone    connect by USB, turn on Personal Hotspot, tap Trust
-       Ethernet  plug in a cable from the router
+  This stick installs Linux on the iMac's internal drive, next to macOS.
 
-  2. From the MacBook (easier for copy and paste):
-       ssh root@imac-live.local
-     or keep working on this console.
+  First, in macOS on the iMac:
+    1. Make a Time Machine backup.
+    2. Disk Utility > View > Show All Devices > select the internal drive >
+       Partition > "+" > Add Partition. Make two, format "MS-DOS (FAT)":
+           LINUXBOOT    1 GB
+           LINUX        60 GB or more (20 GB minimum)
 
-  3. Start Claude:
-       cd /persist/imac-display && claude
-     Log in with the link it shows, then tell it:
-       follow docs/IMAC-BUILD.md
+  Then here, type:
 
-  Hardware facts in one file:  m0-check
+       imac-install
+
+  It erases only the partitions named LINUXBOOT and LINUX, and asks first.
+  No internet is needed.
+
+  Also on this stick:  m0-check (hardware facts)   iwctl (Wi-Fi)   claude
 

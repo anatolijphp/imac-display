@@ -1,5 +1,4 @@
-# Environment for the iMac Display live system.
+# Environment for the iMac Display system.
+# Claude Code is installed system-wide in /usr/local/bin; update it by rebuilding
+# the image or with "claude update", not in the background.
 export DISABLE_AUTOUPDATER=1
-if [ -d /persist/home/.claude ]; then
-  export CLAUDE_CONFIG_DIR=/persist/home/.claude
-fi

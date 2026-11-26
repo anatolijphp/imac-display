@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the bootable live image on a Mac. Result: out/imac-display-live-<date>-x86_64.iso
+# Builds the bootable installer image on a Mac. Result: out/imac-display-installer-<date>-x86_64.iso
 #
 # Arch's image builder only runs on Linux, so the build happens in a throwaway x86_64
 # Arch container. Docker is a build tool only; nothing of it ends up in the image.
@@ -21,6 +21,13 @@ if [ ! -f "$PUBKEY" ]; then
   exit 1
 fi
 cp "$PUBKEY" cache/authorized_keys
+
+# The repo is baked into the image as a git bundle of what is committed.
+if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
+  echo "build: WARNING: uncommitted changes will not be in the image's copy of the repo" >&2
+fi
+rm -f cache/imac-display.bundle
+git -C "$REPO" bundle create "$PWD/cache/imac-display.bundle" --all
 
 docker build --platform linux/amd64 -t imac-iso-builder .
 

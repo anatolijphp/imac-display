@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Writes the bootable USB stick on macOS. ERASES THE WHOLE STICK.
+# Writes the bootable installer USB stick on macOS. ERASES THE WHOLE STICK.
 #
-#   Partition 1  ARCHISO   FAT32  the live system (contents of the ISO); the iMac boots from it
-#   Partition 2  IMACDATA  FAT32  this repo as a git bundle; the live system converts it to
-#                                 ext4 on first boot and keeps its saved data there
+# The stick gets one FAT32 partition holding the contents of the installer ISO.
+# The installer finds its boot medium by looking for /boot/<uuid>.uuid on any drive,
+# so a plain copy of the ISO's files boots the same as the ISO itself. No sudo needed.
 #
 # Usage: tools/make-usb.sh diskN --erase diskN [path/to/image.iso]
 #   The disk name is given twice on purpose, to make erasing the wrong disk harder.
 #   Find it with: diskutil list external physical
+#
+# If the iMac's boot picker does not show the stick, write the ISO raw instead:
+#   diskutil unmountDisk diskN && sudo dd if=out/<image>.iso of=/dev/rdiskN bs=4m
 set -euo pipefail
 
 die() { echo "make-usb: $*" >&2; exit 1; }
@@ -18,63 +21,49 @@ DISK="${1:-}"
 [[ "$DISK" =~ ^disk[0-9]+$ ]] || die "give the whole disk, for example disk4 (not disk4s1, not /dev/disk4)"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="${4:-$(ls -t "$REPO"/out/imac-display-live-*.iso 2>/dev/null | head -1 || true)}"
+ISO="${4:-$(ls -t "$REPO"/out/imac-display-installer-*.iso 2>/dev/null | head -1 || true)}"
 [ -f "$ISO" ] || die "no image found; build it first with linux/iso/build.sh"
 
-BOOT_GB=6
-MIN_BYTES=$((14 * 1000 * 1000 * 1000))
+# The stick must hold the image plus 10% and 100 MB for FAT32 and partition overhead.
+ISO_BYTES="$(stat -f %z "$ISO")"
+MIN_BYTES=$(( ISO_BYTES + ISO_BYTES / 10 + 100 * 1000 * 1000 ))
 
-# --- refuse anything that is not an external, removable, whole disk ----------------
+# --- refuse anything that is not an external USB whole disk ---------------------------
 INFO="$(diskutil info "$DISK")" || die "no such disk: $DISK"
 field() { awk -F': *' -v k="^ *$1\$" '$1 ~ k {print $2; exit}' <<<"$INFO"; }
 [ "$(field 'Whole')" = "Yes" ] || die "$DISK is not a whole disk"
 [ "$(field 'Device Location')" = "External" ] || die "$DISK is not an external disk; refusing"
 [ "$(field 'Protocol')" = "USB" ] || die "$DISK is not a USB device (protocol: $(field 'Protocol')); refusing"
 BYTES="$(awk -F'[()]' '/Disk Size/ {print $2; exit}' <<<"$INFO" | awk '{print $1}')"
-[ "${BYTES:-0}" -ge "$MIN_BYTES" ] || die "$DISK is smaller than 14 GB"
+[ "${BYTES:-0}" -ge "$MIN_BYTES" ] || die "$DISK is too small: the image needs a stick of at least $((MIN_BYTES / 1000000)) MB"
 
 echo "make-usb: erasing $DISK: $(field 'Device / Media Name'), $(field 'Disk Size' | cut -d'(' -f1)"
 echo "make-usb: image $ISO"
 
-# --- partition -----------------------------------------------------------------------
-diskutil partitionDisk "$DISK" GPT \
-  "MS-DOS FAT32" ARCHISO "${BOOT_GB}G" \
-  "MS-DOS FAT32" IMACDATA R
+# --- partition and copy -----------------------------------------------------------------
+diskutil partitionDisk "$DISK" GPT "MS-DOS FAT32" IMACINST R
 
-BOOT=/Volumes/ARCHISO
-DATA=/Volumes/IMACDATA
-[ -d "$BOOT" ] && [ -d "$DATA" ] || die "the new volumes did not mount"
-mdutil -i off "$BOOT" "$DATA" >/dev/null 2>&1 || true
+VOL=/Volumes/IMACINST
+[ -d "$VOL" ] || die "the new volume did not mount"
+mdutil -i off "$VOL" >/dev/null 2>&1 || true
 
-# --- live system: extract the ISO's file tree onto the FAT32 boot partition ---------------
-# The live system finds its boot medium by looking for /boot/<uuid>.uuid on any drive,
-# so a plain copy of the files boots the same as the ISO itself.
-echo "make-usb: copying the live system (a few minutes)"
-bsdtar -x -f "$ISO" -C "$BOOT"
+echo "make-usb: copying the installer (several minutes on a USB 2.0 stick)"
+bsdtar -x -f "$ISO" -C "$VOL"
 
-# --- data partition: the repo as one bundle file, plus the marker the live system checks ---
-echo "make-usb: writing the project repo"
-git -C "$REPO" bundle create "$DATA/imac-display.bundle" --all
-git -C "$REPO" bundle verify "$DATA/imac-display.bundle" >/dev/null
-cat > "$DATA/IMACDATA.marker" <<EOF
-iMac Display data partition. Created $(date -u +%Y-%m-%dT%H:%M:%SZ).
-The live system converts this partition to ext4 on first boot.
-EOF
-
-# --- verify ---------------------------------------------------------------------------------
+# --- verify -----------------------------------------------------------------------------
 echo "make-usb: verifying"
-[ -f "$BOOT/EFI/BOOT/BOOTx64.EFI" ] || die "boot loader missing on the stick"
-ls "$BOOT"/boot/*.uuid >/dev/null 2>&1 || die "boot-medium marker (boot/<uuid>.uuid) missing"
-SFS="$BOOT/arch/x86_64/airootfs.sfs"
-[ -f "$SFS" ] || die "root filesystem image missing"
-if [ -f "$BOOT/arch/x86_64/airootfs.sha512" ]; then
-  WANT="$(awk '{print $1}' "$BOOT/arch/x86_64/airootfs.sha512")"
+[ -f "$VOL/EFI/BOOT/BOOTx64.EFI" ] || die "boot loader missing on the stick"
+ls "$VOL"/boot/*.uuid >/dev/null 2>&1 || die "boot-medium marker (boot/<uuid>.uuid) missing"
+SFS="$VOL/arch/x86_64/airootfs.sfs"
+[ -f "$SFS" ] || die "system image missing"
+if [ -f "$VOL/arch/x86_64/airootfs.sha512" ]; then
+  WANT="$(awk '{print $1}' "$VOL/arch/x86_64/airootfs.sha512")"
   GOT="$(shasum -a 512 "$SFS" | awk '{print $1}')"
-  [ "$WANT" = "$GOT" ] || die "root filesystem image is corrupt on the stick (checksum mismatch)"
-  echo "make-usb: root filesystem checksum ok"
+  [ "$WANT" = "$GOT" ] || die "the system image is corrupt on the stick (checksum mismatch)"
+  echo "make-usb: system image checksum ok"
 fi
 
-dot_clean -m "$BOOT" 2>/dev/null || true
+dot_clean -m "$VOL" 2>/dev/null || true
 sync
 diskutil eject "$DISK"
 echo "make-usb: done. The stick can be unplugged."

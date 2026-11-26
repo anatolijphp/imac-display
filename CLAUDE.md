@@ -4,14 +4,14 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 ## Which machine am I on?
 
-- **On the iMac** (hostname `imac-live` on the USB stick, later `imac-display`): you are the iMac session. Follow `docs/IMAC-BUILD.md` from the top.
+- **On the iMac** (Linux, hostname `imac-display`; `imac-installer` while booted from the USB stick): you are the iMac session. Follow `docs/IMAC-BUILD.md` from the top.
 - **On the MacBook** (macOS, Apple Silicon): you are the MacBook session. You own the Mac app and the protocol.
 
 ## Decisions already made (do not reopen without the user)
 
 - **Link: Thunderbolt only.** One cable: MacBook USB-C port → Apple Thunderbolt 3–to–2 adapter → Thunderbolt 2 cable → iMac. No Ethernet or Wi-Fi fallback for the display link. Wi-Fi on the iMac is for setup and package downloads only.
 - **Transport: Thunderbolt networking**, not PCIe. Two computers cannot open a PCIe tunnel to each other; Thunderbolt's host-to-host mode gives an IP link (`thunderbolt0` on Linux, `bridge0` "Thunderbolt Bridge" on macOS, link-local addresses).
-- **iMac: dual boot.** macOS stays on the internal drive. Linux gets its own partition.
+- **iMac: dual boot.** macOS stays on the internal drive and stays the default system. Linux lives in two partitions the user made in Disk Utility, `LINUX` and `LINUXBOOT`, and is installed from a USB stick with `imac-install` (`docs/INSTALL.md`).
 - **Linux: Arch, minimal, no desktop.** Kernel pinned once the 5K panel works.
 - **MacBook: exactly one custom app.** No third-party helper apps.
 - **Sound:** MacBook output → iMac speakers and 3.5 mm jack; iMac microphone → MacBook input.
@@ -40,15 +40,15 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 - Small commits with clear messages. Pull before starting work. Do not push to any remote unless the user asks.
 - Write down what you measured, not what you expect. Unverified claims are marked as such.
 - Third-party code (kernel patches, driver forks) is read before it is built or loaded.
-- **The iMac's internal drive is never modified** until the user has confirmed a Time Machine backup and approved a written partition plan.
+- **On the iMac's internal drive, only the `LINUX` and `LINUXBOOT` partitions are ours.** Nothing else on that drive is written to, resized or reformatted, and the firmware's boot settings are left alone.
 
 ## Milestones
 
 | | Side | What |
 |---|---|---|
-| M0 | iMac | Hardware gate: Thunderbolt networking, 5K panel, video decode, sound, internal drive. Go or no-go. |
+| M0 | iMac | Hardware gate: Thunderbolt networking, 5K panel, video decode, sound. Go or no-go. |
 | M1 | MacBook | Spikes: virtual display, screen capture, low-latency encode, build and sign without Xcode. |
-| M2 | iMac | Dual-boot install, kernel pin, 5K patch, boot straight into the receiver. |
+| M2 | iMac | Turn the installed system into an appliance: kernel pin, 5K patch, boot straight into the receiver. |
 | M3 | Both | Video end to end: cable in → display appears. |
 | M4 | Both | Sound out and microphone. |
 | M5 | Both | Keyboard and mouse. |
