@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Picks the Wi-Fi driver for the iMac's Broadcom card.
+#   BCM43602 (14e4:43ba / 43bb / 43bc): in-kernel brcmfmac, loads by itself.
+#   Older BCM4360-family cards:         proprietary "wl" (broadcom-wl-dkms), loaded here.
+set -u
+log() { echo "imac-wifi-select: $*"; }
+
+# PCI network controllers (class 0280) from Broadcom (vendor 14e4).
+ids="$(lspci -n -d 14e4: 2>/dev/null | awk '$2 ~ /^0280/ {print $3}')"
+if [ -z "$ids" ]; then
+  log "no Broadcom Wi-Fi card found"
+  exit 0
+fi
+
+case "$ids" in
+  *14e4:43ba*|*14e4:43bb*|*14e4:43bc*)
+    log "BCM43602 ($ids): using brcmfmac"
+    exit 0
+    ;;
+esac
+
+# Give an in-kernel driver a moment; if it produced an interface, leave it alone.
+sleep 2
+if ls /sys/class/net 2>/dev/null | grep -q '^wl'; then
+  log "card $ids already has an interface; leaving the driver as is"
+  exit 0
+fi
+
+log "card $ids: switching to the proprietary wl driver"
+modprobe -r b43 brcmsmac bcma ssb 2>/dev/null
+if modprobe wl; then
+  log "wl loaded"
+else
+  log "wl could not be loaded (module missing for this kernel?)"
+fi

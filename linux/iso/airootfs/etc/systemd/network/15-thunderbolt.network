@@ -1,0 +1,16 @@
+# The Thunderbolt cable to the MacBook. macOS's "Thunderbolt Bridge" uses a self-assigned
+# 169.254.x.x address unless Internet Sharing is on, in which case it hands out DHCP leases.
+[Match]
+Name=thunderbolt*
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+DHCP=yes
+LinkLocalAddressing=yes
+MulticastDNS=yes
+IPv6AcceptRA=yes
+
+[DHCPv4]
+RouteMetric=200

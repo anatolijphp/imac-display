@@ -1,0 +1,21 @@
+
+  iMac Display live system  (Arch Linux + Claude Code)
+  Runs from the USB stick. The iMac's internal drive is not touched.
+
+  1. Get internet. Pick one:
+       Wi-Fi     iwctl station wlan0 connect "NETWORK NAME"
+                 (other interface name? see: iwctl station list)
+       iPhone    connect by USB, turn on Personal Hotspot, tap Trust
+       Ethernet  plug in a cable from the router
+
+  2. From the MacBook (easier for copy and paste):
+       ssh root@imac-live.local
+     or keep working on this console.
+
+  3. Start Claude:
+       cd /persist/imac-display && claude
+     Log in with the link it shows, then tell it:
+       follow docs/IMAC-BUILD.md
+
+  Hardware facts in one file:  m0-check
+

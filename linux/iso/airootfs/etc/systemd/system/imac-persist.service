@@ -1,0 +1,12 @@
+[Unit]
+Description=iMac Display: mount the USB stick's data partition at /persist
+After=local-fs.target
+Before=sshd.service sshdgenkeys.service iwd.service getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/imac-persist
+
+[Install]
+WantedBy=multi-user.target

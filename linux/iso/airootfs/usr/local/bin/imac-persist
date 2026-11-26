@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Mounts the USB stick's data partition (label IMACDATA) at /persist so that the
+# project repo, the Claude login, SSH host keys and known Wi-Fi networks survive reboots.
+#
+# First boot: the partition was created on macOS as FAT32 and holds a git bundle.
+# It is converted to ext4 (FAT cannot hold a build tree) and the bundle is cloned.
+# The conversion only ever touches a USB partition that carries our marker file.
+set -u
+
+LABEL=IMACDATA
+MNT=/persist
+MARKER=IMACDATA.marker
+log() { echo "imac-persist: $*"; }
+
+dev=""
+for _ in $(seq 1 20); do
+  dev="$(blkid -L "$LABEL" 2>/dev/null)" && [ -n "$dev" ] && break
+  sleep 0.5
+done
+if [ -z "$dev" ]; then
+  log "no $LABEL partition found; running without saved data"
+  exit 0
+fi
+
+fstype="$(blkid -o value -s TYPE "$dev")"
+parent="/dev/$(lsblk -ndo PKNAME "$dev")"
+tran="$(lsblk -ndo TRAN "$parent" 2>/dev/null)"
+mkdir -p "$MNT"
+
+if [ "$fstype" != "ext4" ]; then
+  if [ "$tran" != "usb" ]; then
+    log "$dev is not on a USB device (transport: ${tran:-unknown}); not converting it"
+    exit 0
+  fi
+  stage=/run/imacdata-stage
+  mkdir -p "$stage/mnt" "$stage/files"
+  if ! mount -o ro "$dev" "$stage/mnt"; then
+    log "cannot mount $dev ($fstype); running without saved data"
+    exit 0
+  fi
+  if [ ! -f "$stage/mnt/$MARKER" ]; then
+    umount "$stage/mnt"
+    log "$dev has no $MARKER file; not converting it"
+    exit 0
+  fi
+  # Copy the seed files (not macOS's hidden .Spotlight/.fseventsd folders) to RAM.
+  find "$stage/mnt" -maxdepth 1 -type f ! -name '.*' -exec cp {} "$stage/files/" \;
+  umount "$stage/mnt"
+  log "first boot: converting $dev from $fstype to ext4"
+  if ! mkfs.ext4 -q -F -L "$LABEL" "$dev"; then
+    log "mkfs.ext4 failed on $dev"
+    exit 1
+  fi
+  mount "$dev" "$MNT" || { log "cannot mount new ext4 on $dev"; exit 1; }
+  mkdir -p "$MNT/seed"
+  cp "$stage/files/"* "$MNT/seed/" 2>/dev/null
+  rm -rf "$stage"
+else
+  e2fsck -p "$dev" >/dev/null 2>&1
+  mount "$dev" "$MNT" || { log "cannot mount $dev"; exit 1; }
+fi
+
+mkdir -p "$MNT/home/.claude" "$MNT/ssh" "$MNT/iwd"
+chmod 700 "$MNT/home" "$MNT/home/.claude" "$MNT/ssh" "$MNT/iwd"
+
+# Project repo: cloned once from the bundle written by tools/make-usb.sh.
+if [ ! -d "$MNT/imac-display/.git" ] && [ -f "$MNT/seed/imac-display.bundle" ]; then
+  if git clone -q "$MNT/seed/imac-display.bundle" "$MNT/imac-display"; then
+    git -C "$MNT/imac-display" remote rename origin seed
+    log "project repo restored to $MNT/imac-display"
+  else
+    log "could not clone $MNT/seed/imac-display.bundle"
+  fi
+fi
+
+# SSH host keys: keep the same ones across boots so the MacBook does not see a changed host.
+if ls "$MNT"/ssh/ssh_host_*_key >/dev/null 2>&1; then
+  cp -a "$MNT"/ssh/ssh_host_* /etc/ssh/
+else
+  ssh-keygen -A >/dev/null
+  cp -a /etc/ssh/ssh_host_* "$MNT/ssh/"
+fi
+
+# Known Wi-Fi networks (iwd), so Wi-Fi reconnects by itself after a reboot.
+mkdir -p /var/lib/iwd
+mount --bind "$MNT/iwd" /var/lib/iwd
+
+# Claude Code keeps its login and settings on the stick.
+echo "CLAUDE_CONFIG_DIR=$MNT/home/.claude" >> /etc/environment
+
+log "ready: $dev mounted at $MNT"

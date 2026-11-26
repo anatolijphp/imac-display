@@ -1,0 +1,37 @@
+# Added on top of Arch's releng package list. One package per line.
+# Hardware gate
+iperf3
+libva-utils
+mesa
+intel-media-driver
+alsa-utils
+alsa-tools
+ffmpeg
+mpv
+bolt
+usbutils
+pciutils
+dmidecode
+evtest
+lm_sensors
+smartmontools
+# Building the receiver and patched kernel modules
+git
+base-devel
+cmake
+linux-headers
+dkms
+# Networking: Wi-Fi driver for older Broadcom cards, iPhone USB tethering, service discovery
+broadcom-wl-dkms
+usbmuxd
+libimobiledevice
+avahi
+nss-mdns
+# Comfort
+tmux
+rsync
+jq
+ripgrep
+htop
+less
+which

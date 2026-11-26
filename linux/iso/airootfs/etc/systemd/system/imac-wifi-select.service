@@ -1,0 +1,12 @@
+[Unit]
+Description=iMac Display: pick the Wi-Fi driver for the Broadcom card
+After=systemd-modules-load.service
+Before=iwd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/imac-wifi-select
+
+[Install]
+WantedBy=multi-user.target
