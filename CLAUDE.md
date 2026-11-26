@@ -9,7 +9,7 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 ## Decisions already made (do not reopen without the user)
 
-- **Link: Thunderbolt only.** One cable: MacBook USB-C port → Apple Thunderbolt 3–to–2 adapter → Thunderbolt 2 cable → iMac. No Ethernet or Wi-Fi fallback for the display link. Wi-Fi on the iMac is for setup and package downloads only.
+- **Link: Thunderbolt only.** One cable: MacBook USB-C port → Apple Thunderbolt 3–to–2 adapter → Thunderbolt 2 cable → iMac. No Ethernet or Wi-Fi fallback for the display link. Wi-Fi on the iMac is for setup and package downloads only. One exception, asked for by the user: a Thunderbolt / Wi-Fi switch on the iMac's waiting screen, for testing over Wi-Fi; Thunderbolt stays the default.
 - **Transport: Thunderbolt networking**, not PCIe. Two computers cannot open a PCIe tunnel to each other; Thunderbolt's host-to-host mode gives an IP link (`thunderbolt0` on Linux, `bridge0` "Thunderbolt Bridge" on macOS, link-local addresses).
 - **iMac: dual boot.** macOS stays on the internal drive and stays the default system. Linux lives in two partitions the user made in Disk Utility, `LINUX` and `LINUXBOOT`, and is installed from a USB stick with `imac-install` (`docs/INSTALL.md`).
 - **Linux: Arch, minimal, no desktop.** Kernel pinned once the 5K panel works.
