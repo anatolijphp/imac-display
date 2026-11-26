@@ -1,16 +1,32 @@
 # Mac side
 
-The MacBook half of `PROTOCOL.md`. For now a library and a command-line test tool; the menu-bar app comes in M3. Results of the first measurements: `docs/mac-spikes.md`.
+The MacBook half of `PROTOCOL.md`. **The user installs exactly one thing: `iMac Display.app`.** Everything else here is source, build scripts and a test tool for development. Results of the first measurements: `docs/mac-spikes.md`.
+
+## The app
+
+    scripts/build-app.sh        # → out/iMac Display.app and out/iMac Display.dmg
+
+A menu-bar icon, no windows. It:
+
+- looks for the iMac on the Thunderbolt link (`_imacdisplay._tcp`) and connects by itself; "Testing: connect over Wi-Fi" in its menu connects to `imac-display.local` instead;
+- adds the extra display, sends picture and sound, takes the iMac's keyboard, mouse and USB drives;
+- carries the "iMac Speakers" sound device inside (`Contents/Resources/iMacDisplayAudio.driver`) and installs, updates or removes it from its menu, with macOS's administrator password dialog;
+- asks for its permissions on first start and lists the missing ones in its menu;
+- writes `~/Library/Logs/iMac Display.log`.
+
+Not verified yet: finding the iMac over Thunderbolt (no cable connected so far, and the receiver does not advertise the service yet).
 
 | Path | What |
 |---|---|
 | `Sources/CVirtualDisplay/` | Declarations for Apple's private virtual-display classes |
 | `Sources/IMDKit/` | `Wire` (frame format), `Channel` and `Session` (the two TCP connections), `VirtualDisplay`, `DisplayCapture` (screen and sound), `H264Encoder`, `TileSplitter`, `InputInjector` (the iMac's keyboard and mouse), `StorageMounter` (the iMac's USB drives) |
-| `Sources/imd/` | `imd`: `vdisplay`, `pipeline`, `hello` (run it without arguments for the options) |
+| `Sources/iMacDisplayApp/` | The app |
+| `Sources/IMDKit/DisplaySession.swift`, `IMacFinder.swift` | One whole session with the iMac; finding the iMac |
+| `Sources/imd/` | `imd`, the development test tool: `vdisplay`, `pipeline`, `hello` (run it without arguments for the options) |
 | `AudioDriver/` | The "iMac Speakers" audio driver (a Core Audio server plug-in in C) and its self-test |
 | `Sources/IMDKit/SpeakerDevice.swift` | The app's end of that driver: records what was played into "iMac Speakers", follows its volume and mute |
-| `scripts/build-audio-driver.sh`, `scripts/install-audio-driver.sh` | Build, sign and self-test the driver; install or remove it (asks for an administrator password) |
-| `scripts/build-app.sh` | Builds and signs `out/iMac Display.app` |
+| `scripts/build-audio-driver.sh`, `scripts/install-audio-driver.sh` | Build, sign and self-test the driver; install or remove it by hand (development only: the app does this itself) |
+| `scripts/build-app.sh` | Builds and signs the app with the driver inside, and the disk image |
 | `test/fake_imac.py` | A stand-in for the iMac's receiver |
 
 Build: `swift build -c release` (Command Line Tools are enough).

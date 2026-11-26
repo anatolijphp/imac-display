@@ -13,7 +13,7 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 - **Transport: Thunderbolt networking**, not PCIe. Two computers cannot open a PCIe tunnel to each other; Thunderbolt's host-to-host mode gives an IP link (`thunderbolt0` on Linux, `bridge0` "Thunderbolt Bridge" on macOS, link-local addresses).
 - **iMac: dual boot.** macOS stays on the internal drive and stays the default system. Linux lives in two partitions the user made in Disk Utility, `LINUX` and `LINUXBOOT`, and is installed from a USB stick with `imac-install` (`docs/INSTALL.md`).
 - **Linux: Arch, minimal, no desktop.** Kernel pinned once the 5K panel works.
-- **MacBook: exactly one custom app.** No third-party helper apps.
+- **MacBook: exactly one custom app**, `iMac Display.app`. No third-party helper apps, no separate installers: anything the app needs (the "iMac Speakers" sound device) is inside it and installed by it.
 - **Sound:** MacBook output → iMac speakers and 3.5 mm jack; iMac microphone → MacBook input.
 - **USB:** keyboard and mouse (forwarded as input events), flash drives and disks (shared as network volumes over the cable), printers and scanners (AirPrint/AirScan re-publishing). Arbitrary USB pass-through is gated on an Apple-granted entitlement and is the last milestone.
 
