@@ -78,3 +78,14 @@ Test clips (10 s, 600 frames, 60 fps) were made with libx264 and are under `/roo
 
 ## Other findings
 
+### Wi-Fi test link (not the display link; for testing at low resolution only)
+
+2026-11-26. iMac `wlan0` (BCM43602, `brcmfmac`) to the MacBook over the home Wi-Fi, 5 GHz channel 44, 40 MHz.
+
+- `iw dev wlan0 link`: signal −70 dBm, rx/tx bitrate 162 Mbit/s.
+- `ping -c20 -i0.2 fe80::…%wlan0` (iMac → MacBook): 0 % loss, rtt min/avg/max 3.2 / 10.7 / 75.8 ms.
+- `iperf3 -s` on the iMac, `iperf3 -c imac-display.local -t 10` on the MacBook (went over IPv6 link-local). Numbers from the iMac's server log:
+  - MacBook → iMac: **65.4 Mbit/s** (per-second values 54–78)
+  - iMac → MacBook (`-R`): **88.2 Mbit/s**, 0 retransmits (per-second values 65–108)
+- Good enough for one 1080p H.264 stream at 10–20 Mbit/s. Latency spikes of up to ~75 ms are to be expected.
+
