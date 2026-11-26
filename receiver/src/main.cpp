@@ -1,6 +1,10 @@
 // imacdisplayd: the iMac side of PROTOCOL.md.
 // Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding, USB drives over SMB.
-// Not yet: waiting screen, video decode and display, sound.
+// Waiting screen on the bare panel. Not yet: video decode and display, sound.
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -15,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "display.h"
 #include "input.h"
 #include "storage.h"
 #include "net.h"
@@ -42,6 +47,8 @@ struct Options {
   uint16_t port = proto::kPort;
   bool storage_read_only = false;
   bool share_macos = true;
+  bool display = true;
+  std::string screenshot;  // write the waiting screen to this PNG once it is drawn (testing)
 };
 
 class Daemon {
@@ -54,16 +61,21 @@ class Daemon {
     timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec its{{1, 0}, {1, 0}};
     timerfd_settime(timer_, 0, &its, nullptr);
+    anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
+    timerfd_settime(anim_, 0, &ats, nullptr);
   }
 
   int run() {
     fprintf(stderr, "imacdisplayd: listening on %s port %u\n", opt_.iface.c_str(), opt_.port);
     try_listen();
+    update_screen();
     while (!g_stop) {
       std::vector<pollfd> pfds;
       std::vector<int> kind;  // 0 timer 1 listen 2 pending 3 ctrl 4 video 5 inotify 6 input
       auto add = [&](int fd, short ev, int k) { pfds.push_back({fd, ev, 0}); kind.push_back(k); };
       add(timer_, POLLIN, 0);
+      if (display_.is_open()) add(anim_, POLLIN, 8);
       if (listen_fd_ >= 0) add(listen_fd_, POLLIN, 1);
       for (auto& c : pending_) add(c->fd(), POLLIN | (c->wants_write() ? POLLOUT : 0), 2);
       if (ctrl_) add(ctrl_->fd(), POLLIN | (ctrl_->wants_write() ? POLLOUT : 0), 3);
@@ -89,10 +101,12 @@ class Daemon {
           case 5: input_.on_inotify(); break;
           case 6: input_.on_readable(fd); break;
           case 7: storage_.on_udev(); break;
+          case 8: { uint64_t n; (void)!read(anim_, &n, sizeof n); display_.animate(); break; }
         }
       }
     }
     end_session("receiver shutting down");
+    display_.close();
     return 0;
   }
 
@@ -158,11 +172,13 @@ class Daemon {
       if (ctrl_) end_session("replaced by a new session");
       ctrl_ = std::move(conn);
       session_ = session;
+      mac_name_ = hello.value("name", "");
       fprintf(stderr, "session: ctrl from %s, \"%s\", session %s\n", ctrl_->peer().c_str(),
-              hello.value("name", "?").c_str(), session_.c_str());
+              mac_name_.c_str(), session_.c_str());
       ctrl_->send_json(proto::HELLO, imac_hello().dump());
       input_.set_active(true);
       storage_.session_started();
+      update_screen();
       service_ctrl(0, /*buffered_only=*/true);
     } else if (channel == "video" && ctrl_ && session == session_) {
       video_ = std::move(conn);
@@ -238,8 +254,54 @@ class Daemon {
     }
   }
 
+  // Waiting screen: cable state, session state, and the link's addresses in the footer.
+  void update_screen() {
+    if (!opt_.display) return;
+    if (!display_.is_open() && !display_.open()) return;
+    Display::Status st;
+    if (ctrl_) { st.state = Display::State::Connected; st.mac_name = mac_name_; }
+    else if (listen_fd_ >= 0 && iface_up()) st.state = Display::State::WaitingForMac;
+    else st.state = Display::State::NoCable;
+    st.footer = footer();
+    display_.show(st);
+    if (!opt_.screenshot.empty()) {
+      fprintf(stderr, "display: screenshot %s: %s\n", opt_.screenshot.c_str(), display_.save_png(opt_.screenshot) ? "ok" : "failed");
+      opt_.screenshot.clear();
+    }
+  }
+
+  bool iface_up() const {
+    unsigned idx = if_nametoindex(opt_.iface.c_str());
+    if (!idx) return false;
+    char path[128];
+    snprintf(path, sizeof path, "/sys/class/net/%s/carrier", opt_.iface.c_str());
+    FILE* f = fopen(path, "r");
+    int c = 0;
+    if (f) { if (fscanf(f, "%d", &c) != 1) c = 0; fclose(f); }
+    return c == 1;
+  }
+
+  std::string footer() const {
+    char host[64] = "";
+    gethostname(host, sizeof host - 1);
+    std::string s = std::string(host) + "  \u00b7  " + opt_.iface;
+    std::string addrs;
+    ifaddrs* ifa = nullptr;
+    if (getifaddrs(&ifa) == 0) {
+      for (ifaddrs* a = ifa; a; a = a->ifa_next) {
+        if (!a->ifa_addr || opt_.iface != a->ifa_name || a->ifa_addr->sa_family != AF_INET) continue;
+        char buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &((sockaddr_in*)a->ifa_addr)->sin_addr, buf, sizeof buf);
+        addrs += std::string("  ") + buf;
+      }
+      freeifaddrs(ifa);
+    }
+    return s + (addrs.empty() ? "  not connected" : addrs);
+  }
+
   void tick() {
     try_listen();
+    update_screen();
     uint64_t now = now_us();
     // Connections that never sent HELLO.
     for (size_t i = 0; i < pending_.size();)
@@ -272,6 +334,7 @@ class Daemon {
     input_.set_active(false);
     storage_.session_ended();
     fprintf(stderr, "session: ended\n");
+    update_screen();
   }
 
   void send_ctrl(uint8_t type, const void* p, size_t n) {
@@ -279,6 +342,9 @@ class Daemon {
   }
 
   Options opt_;
+  Display display_;
+  int anim_ = -1;
+  std::string mac_name_;
   Input input_;
   Storage storage_;
   int timer_ = -1;
@@ -302,13 +368,16 @@ int main(int argc, char** argv) {
     else if (a == "--port" && i + 1 < argc) o.port = std::stoi(argv[++i]);
     else if (a == "--storage-read-only") o.storage_read_only = true;
     else if (a == "--no-macos-share") o.share_macos = false;
+    else if (a == "--no-display") o.display = false;
+    else if (a == "--screenshot" && i + 1 < argc) o.screenshot = argv[++i];
     else {
       fprintf(stderr,
               "usage: imacdisplayd [--iface IFACE] [--port PORT]\n"
               "  --iface  network interface to accept connections on (default thunderbolt0;\n"
               "           anything else is for testing only)\n"
               "  --storage-read-only  mount USB drives read-only (testing)\n"
-              "  --no-macos-share     do not offer the iMac's own macOS Data volume (read-only by default)\n");
+              "  --no-macos-share     do not offer the iMac's own macOS Data volume (read-only by default)\n"
+              "  --no-display         leave the screen alone (testing next to a running receiver)\n");
       return 2;
     }
   }

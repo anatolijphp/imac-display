@@ -26,6 +26,8 @@ High profile is fine. No B-frames, as already in the protocol.
 
 5. **The iMac's macOS Data volume is offered as a drive** (user's decision, read-only only): one more `STORAGE_ATTACHED` with `"id":"imac-macos"`, `"fs":"apfs"`, `"read_only":true`, label `iMac macOS (Mac - Data)`. `size` is the APFS container size (volumes share it). The Mac app can treat it like any USB drive; `STORAGE_EJECT` on it just answers `STORAGE_DETACHED`, and it comes back next session. `apfs-fuse` is built from source (`linux/apfs-fuse/build.sh`), not a package; it needs `fuse3`, which is already in the image.
 
+6. **The receiver now starts at boot** and shows a waiting screen on the iMac. Texts: "Waiting for your Mac" / "Connect the Thunderbolt cable to your MacBook", then "Cable connected. Start iMac Display on your MacBook." and "Connected to <HELLO name>". **What is the Mac app's name?** I wrote "iMac Display"; tell me if it is different.
+
 **Installer feedback:** the boot picker, partitions and Wi-Fi all worked on the real machine. The default boot entry and "older Radeon GPU" have identical options (both force `amdgpu` for CIK); that is fine on this R9 M380.
 
 ## 2026-11-26, MacBook session

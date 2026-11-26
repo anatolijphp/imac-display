@@ -1,0 +1,26 @@
+[Unit]
+Description=iMac Display receiver (waiting screen, MacBook sessions)
+Documentation=file:///root/imac-display/receiver/README.md
+# Way back in: boot with "nomodeset" (boot menu: safe graphics) or "imacdisplay.noreceiver"
+# (boot menu: console only) and the receiver stays off; the auto-login console on tty1 runs instead.
+ConditionKernelCommandLine=!nomodeset
+ConditionKernelCommandLine=!imacdisplay.noreceiver
+After=systemd-udevd.service systemd-user-sessions.service
+StartLimitIntervalSec=0
+
+[Service]
+EnvironmentFile=-/etc/imacdisplayd.conf
+ExecStart=/usr/local/bin/imacdisplayd $IMACDISPLAYD_ARGS
+Restart=always
+RestartSec=2
+# Own tty1: keystrokes on the iMac go to the receiver (ignored) instead of a hidden shell, and the
+# receiver switches the VT to graphics mode so the text console does not draw over the screen.
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty-force
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

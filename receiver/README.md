@@ -4,7 +4,7 @@ The iMac side of `PROTOCOL.md`. Status, in the build order of `docs/IMAC-BUILD.m
 
 | Stage | State |
 |---|---|
-| 1. Waiting screen | not started |
+| 1. Waiting screen | done: laptop + Thunderbolt symbol, cable/session state, animated dots, footer with link address (`display.cpp`, DRM dumb buffer + cairo) |
 | 2. Session: HELLO, CONFIG, CONFIG_ACK, PING/PONG, BYE, 3 s timeout | done, tested with `test/fake_mac.py` |
 | 3. Video | video channel accepted, frames counted and dropped; no decode yet |
 | 4. Sound | not started |
@@ -25,6 +25,22 @@ system user `imac` (`linux/rootfs/etc/sysusers.d/imacdisplay.conf`, created with
     ... --storage-read-only                            # testing: mount every USB drive read-only
 
 It retries every second until the interface exists, so it can start before the cable is plugged in.
+
+## At boot
+
+Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
+
+- `/usr/local/bin/imacdisplayd`, `/etc/systemd/system/imacdisplayd.service` (enabled, restarts after 2 s
+  if it stops), optional arguments in `/etc/imacdisplayd.conf`.
+- It owns tty1 and switches it to graphics mode. The auto-login root console on tty1 is off while
+  the receiver runs (`getty@tty1.service.d/receiver.conf`), so typing on the iMac never reaches a hidden shell.
+- **Way back in:** SSH always works. In the boot menu, **"console only (receiver off)"**
+  (`imacdisplay.noreceiver`) or **"safe graphics"** (`nomodeset`) start the old auto-login console instead.
+- The screen waits for the real GPU driver (`amdgpu`) and ignores the firmware framebuffer (`simpledrm`)
+  that exists for the first seconds of boot.
+
+    journalctl -u imacdisplayd -f        # what it is doing
+    systemctl restart imacdisplayd
 
 ## Input
 
