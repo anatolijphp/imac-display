@@ -79,8 +79,17 @@ Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
   connection ("Use Display" off on the Mac) keeps the waiting screen, which then says "Sound only". A new
   `CONFIG` mid-session restarts video with a black panel in between; sound restarts only if its own
   settings changed. The first ~0.3 s of each stream loses pictures while the first one takes the panel.
-- Open: the page flip takes a full refresh (~16 ms) in steady state at 60 fps; receive-to-screen is
-  17–30 ms on loopback.
+- In step with the panel's refresh: the presenter waits for the GPU (`glFinish`, about 7 ms at
+  3840×2160: 2.8 upload, 4.4 draw) before asking for the flip; asked for earlier, every flip landed one
+  refresh late. The screen is not cleared when the picture covers it (a clear costs ~3 ms). When
+  pictures keep finishing early enough for the refresh that is busy with the previous one (30 in a row,
+  by more than the GPU time), one picture is skipped to catch up; a skip that did not help backs off
+  (2 s, doubling to 60 s). Logged as "one refresh behind".
+- Receive-to-screen on loopback, 12 s runs, steady state (before → after): 4K in four tiles 28 → 21 ms
+  (15–30 per run), 1080p one tile 29 → 21 ms, the MacBook's 1080p clip 34 → 21 ms. The spread is the
+  phase between the sender's pictures and the panel's refresh (59.996 Hz): when a picture finishes less
+  than the GPU time before a refresh, it waits for the next one, and nothing on the receiver can change
+  that except less GPU work.
 
 ## Sound
 

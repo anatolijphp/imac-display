@@ -31,6 +31,12 @@ namespace {
 constexpr uint64_t kMaxBacklogUs = 500000;
 constexpr uint64_t kRepeatKeyRequestUs = 1000000;  // while a decoder waits for a keyframe, ask again this often
 constexpr uint64_t kForgetUs = 1000000;            // incomplete pictures older than this are given up
+// Back in step with the panel: when pictures keep finishing well before the refresh that shows the
+// previous one, one picture is skipped (see present_loop).
+constexpr int kBehindToSkip = 30;              // pictures in a row that waited for the previous flip
+constexpr uint64_t kBehindMarginUs = 1500;     // ...by longer than the GPU work plus this
+constexpr uint64_t kSkipBackoffUs = 2000000;   // first pause between skips; doubles when a skip did not help
+constexpr uint64_t kSkipBackoffMaxUs = 60000000;
 constexpr int kSlots = 5;        // pictures in flight: shown/flipping, ready, up to 3 being decoded
 
 double ms_since(uint64_t t0) { return (now_us() - t0) / 1000.0; }
@@ -548,6 +554,9 @@ void Video::present_loop() {
   // Fit the full picture into the panel, keeping its aspect ratio.
   double sc = std::min(double(screen_.w) / cfg_.w, double(screen_.h) / cfg_.h);
   double ox = (screen_.w - cfg_.w * sc) / 2, oy = (screen_.h - cfg_.h * sc) / 2;
+  // A 16:9 picture covers the whole 16:9 panel. Then the screen is not cleared before drawing: on this
+  // GPU a clear of a scan-out buffer costs about 3 ms at 3840x2160 (measured).
+  const bool covers = ox < 0.5 && oy < 0.5;
   std::vector<float> quads;  // per tile: 4 vertices of (x, y, u, v), triangle strip
   for (auto& t : tiles_) {
     auto nx = [&](double px) { return float((ox + px * sc) / screen_.w * 2 - 1); };
@@ -569,6 +578,14 @@ void Video::present_loop() {
   gbm_bo* shown_bo = nullptr;
   bool crtc_set = false;
   bool flip_pending = false;
+  // Behind by one refresh: the picture was complete while the previous flip was still waiting for its
+  // refresh, so it can only be shown one refresh later; with pictures arriving at the panel's rate this
+  // repeats for every picture (about 8 ms more delay than needed, measured). Skipping one picture leaves
+  // the presenter idle when the next one arrives, which then makes the refresh right after it.
+  uint64_t flip_done_us = 0;
+  double gpu_us = 0;  // GPU work per picture (upload, draw, finish), running average
+  int behind = 0;
+  uint64_t next_skip_us = 0, skip_backoff_us = kSkipBackoffUs, last_skip_us = 0;
   drmEventContext ev{};
   ev.version = 2;
   ev.page_flip_handler = [](int, unsigned, unsigned, unsigned, void* data) { *(bool*)data = false; };
@@ -584,6 +601,28 @@ void Video::present_loop() {
       has_ready_ = false;
     }
     uint64_t t_start = now_us();
+    // Only when the picture finished early enough before that refresh that, drawn right away, it would
+    // have made it; otherwise a skip only costs a picture.
+    if (crtc_set && gpu_us > 0 && pic.complete_us + uint64_t(gpu_us) + kBehindMarginUs < flip_done_us) {
+      if (++behind >= kBehindToSkip && t_start >= next_skip_us) {
+        // A skip that is followed by being behind again within a second did not help (the GPU work does
+        // not fit before the refresh at this phase): wait longer before the next one.
+        skip_backoff_us = last_skip_us && t_start - last_skip_us < kSkipBackoffUs + 1500000
+                              ? std::min(skip_backoff_us * 2, kSkipBackoffMaxUs)
+                              : kSkipBackoffUs;
+        last_skip_us = t_start;
+        next_skip_us = t_start + skip_backoff_us;
+        behind = 0;
+        fprintf(stderr, "video: one refresh behind; skipping a picture to catch up\n");
+        std::lock_guard<std::mutex> l(pic_mu_);
+        release(pic);
+        std::lock_guard<std::mutex> s(stats_mu_);
+        stats_.dropped++;
+        continue;
+      }
+    } else {
+      behind = 0;
+    }
 
     // GPU transfer from the pixel buffers into the textures (no CPU copy here). Only tiles that came with
     // this picture are uploaded; the others keep their last picture.
@@ -604,8 +643,12 @@ void Video::present_loop() {
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
     glViewport(0, 0, screen_.w, screen_.h);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    bool all_valid = true;
+    for (size_t i = 0; i < nt; i++) all_valid = all_valid && tile_valid[i];
+    if (!covers || !all_valid) {  // black borders, or tiles not received yet
+      glClearColor(0, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
     for (size_t i = 0; i < nt; i++) {
       if (!tile_valid[i]) continue;  // never received: stays black
       for (int p = 0; p < 3; p++) {
@@ -621,7 +664,13 @@ void Video::present_loop() {
       glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (void*)(i * 64 + 8));
       glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
+    // Wait for the GPU here, before the flip is requested. Requested with the drawing still running, the
+    // flip lands one refresh later than it could (measured: flip 16.4 ms after the swap, every picture);
+    // with the GPU done first it makes the next refresh. The GPU work at 3840x2160 is about 7 ms
+    // (measured: 2.8 ms from the pixel buffers into the textures, 4.4 ms to draw).
+    glFinish();
     uint64_t t_drawn = now_us();
+    gpu_us = gpu_us > 0 ? gpu_us * 0.9 + (t_drawn - t_start) * 0.1 : double(t_drawn - t_start);
 
     eglSwapBuffers(dpy, surf);
     uint64_t t_swapped = now_us();
@@ -642,6 +691,7 @@ void Video::present_loop() {
     } else {
       fprintf(stderr, "video: page flip failed: %s\n", strerror(errno));
     }
+    flip_done_us = now_us();
     if (shown_bo) gbm_surface_release_buffer(gs, shown_bo);
     shown_bo = bo;
     {
