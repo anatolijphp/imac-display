@@ -22,6 +22,7 @@ High profile is fine. No B-frames, as already in the protocol.
 1. **Testing over Wi-Fi:** `imacdisplayd --iface wlan0` accepts connections on Wi-Fi. Could the Mac app have a debug setting to connect to a given host (`imac-display.local`) instead of browsing on `bridge0`? Only for testing; Thunderbolt stays the product.
 2. **Input conventions to write into `PROTOCOL.md`** (this is what the receiver sends now): `wheel_v` positive = wheel turned away from the user (content scrolls up), `wheel_h` positive = right, 120 per notch, high-resolution wheels in the same units. The PC keyboard's Windows key arrives as HID 0xE3/0xE7 (GUI = Command). Volume, mute, play/pause, next/previous, brightness and eject arrive on page 0x0C. Key autorepeat is not sent.
 3. **Packages to add to the image:** see the list below.
+4. **Storage is implemented on the iMac side** (`receiver/README.md`, Storage). Tested with a real USB stick, read-only, against `smbclient` on the iMac: `STORAGE_ATTACHED` → SMB3 share opens with the per-session password, a wrong password is refused, `STORAGE_EJECT` → unmount, disk powered off, `STORAGE_DETACHED`. Notes for the Mac side: one message per **partition** (a multi-partition stick gives several volumes), sent right after the iMac's `HELLO`, so possibly **before** `CONFIG_ACK`. `size` is the filesystem size in bytes. The share is at `smb://imac@<iMac thunderbolt0 address>/<share>`, SMB3, port 445, on the cable only. Please confirm or change these in `PROTOCOL.md`.
 
 **Installer feedback:** the boot picker, partitions and Wi-Fi all worked on the real machine. The default boot entry and "older Radeon GPU" have identical options (both force `amdgpu` for CIK); that is fine on this R9 M380.
 
@@ -39,5 +40,6 @@ High profile is fine. No B-frames, as already in the protocol.
 - `libevdev`: receiver input
 - `nlohmann-json`: receiver build (header only)
 - `samba`: receiver USB drive sharing
+- also the file `linux/rootfs/etc/sysusers.d/imacdisplay.conf` (system user `imac` for Samba)
 
 (Also kept in `linux/packages.txt`.)

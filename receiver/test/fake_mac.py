@@ -77,6 +77,7 @@ def main():
     ap.add_argument("host")
     ap.add_argument("--port", type=int, default=7500)
     ap.add_argument("--seconds", type=float, default=0)
+    ap.add_argument("--eject-after", type=float, default=0, help="send STORAGE_EJECT for each drive this many seconds after it is announced")
     ap.add_argument("--video", action="store_true", help="also open the video channel and send dummy frames")
     a = ap.parse_args()
 
@@ -95,6 +96,7 @@ def main():
     vrd = Reader(video) if video else None
     end = time.monotonic() + a.seconds if a.seconds else None
     next_ping = time.monotonic()
+    ejects = []  # (time, id)
     try:
         while not end or time.monotonic() < end:
             now = time.monotonic()
@@ -103,6 +105,10 @@ def main():
                 if video:
                     video.sendall(frame(0x10, b"\x00\x00\x00\x01" + os.urandom(1000), flags=0b10))
                 next_ping = now + 1
+            for when, vid in [e for e in ejects if e[0] <= now]:
+                print(f"STORAGE_EJECT -> {vid}", flush=True)
+                ctrl.sendall(jframe(0x41, {"id": vid}))
+                ejects.remove((when, vid))
             socks = [ctrl] + ([video] if video else [])
             r, _, _ = select.select(socks, [], [], 0.1)
             for s in r:
@@ -112,6 +118,8 @@ def main():
                     if t in (0x04, 0x05):
                         continue
                     print(f"{NAMES.get(t, hex(t))}: {describe(t, p)}", flush=True)
+                    if t == 0x40 and a.eject_after:
+                        ejects.append((time.monotonic() + a.eject_after, json.loads(p)["id"]))
                     if t == 0x06:
                         return
         ctrl.sendall(jframe(0x06, {"reason": "fake_mac.py done"}))

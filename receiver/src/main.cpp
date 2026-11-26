@@ -1,6 +1,6 @@
 // imacdisplayd: the iMac side of PROTOCOL.md.
-// Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding.
-// Not yet: waiting screen, video decode and display, sound, storage.
+// Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding, USB drives over SMB.
+// Not yet: waiting screen, video decode and display, sound.
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "input.h"
+#include "storage.h"
 #include "net.h"
 #include "protocol.h"
 
@@ -33,18 +34,22 @@ json imac_hello() {
           {"panel", {{"w", 5120}, {"h", 2880}, {"hz", 60}}},
           {"decode", {{"codecs", {"h264"}}, {"max_w", 3840}, {"max_h", 2160}, {"max_tiles", 4}, {"hw", false}}},
           {"audio", {{"out", false}, {"in", false}}},
-          {"features", {"input"}}};
+          {"features", {"input", "storage"}}};
 }
 
 struct Options {
   std::string iface = "thunderbolt0";
   uint16_t port = proto::kPort;
+  bool storage_read_only = false;
 };
 
 class Daemon {
  public:
   explicit Daemon(Options o)
-      : opt_(std::move(o)), input_([this](uint8_t t, const void* p, size_t n) { send_ctrl(t, p, n); }) {
+      : opt_(std::move(o)),
+        input_([this](uint8_t t, const void* p, size_t n) { send_ctrl(t, p, n); }),
+        storage_({opt_.iface, opt_.storage_read_only},
+                 [this](uint8_t t, const std::string& j) { send_ctrl(t, j.data(), j.size()); }) {
     timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec its{{1, 0}, {1, 0}};
     timerfd_settime(timer_, 0, &its, nullptr);
@@ -63,6 +68,7 @@ class Daemon {
       if (ctrl_) add(ctrl_->fd(), POLLIN | (ctrl_->wants_write() ? POLLOUT : 0), 3);
       if (video_) add(video_->fd(), POLLIN | (video_->wants_write() ? POLLOUT : 0), 4);
       add(input_.inotify_fd(), POLLIN, 5);
+      add(storage_.udev_fd(), POLLIN, 7);
       for (int fd : input_.fds()) add(fd, POLLIN, 6);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
@@ -81,6 +87,7 @@ class Daemon {
           case 4: if (video_ && video_->fd() == fd) service_video(pfds[i].revents); break;
           case 5: input_.on_inotify(); break;
           case 6: input_.on_readable(fd); break;
+          case 7: storage_.on_udev(); break;
         }
       }
     }
@@ -154,6 +161,7 @@ class Daemon {
               hello.value("name", "?").c_str(), session_.c_str());
       ctrl_->send_json(proto::HELLO, imac_hello().dump());
       input_.set_active(true);
+      storage_.session_started();
       service_ctrl(0, /*buffered_only=*/true);
     } else if (channel == "video" && ctrl_ && session == session_) {
       video_ = std::move(conn);
@@ -173,6 +181,11 @@ class Daemon {
         case proto::PING: ctrl_->send(proto::PONG, p, h.length); break;
         case proto::PONG: break;
         case proto::CONFIG: handle_config(json::parse(p, p + h.length, nullptr, false)); break;
+        case proto::STORAGE_EJECT: {
+          json j = json::parse(p, p + h.length, nullptr, false);
+          if (j.is_object()) storage_.eject(j.value("id", ""));
+          break;
+        }
         case proto::BYE: {
           json j = json::parse(p, p + h.length, nullptr, false);
           fprintf(stderr, "session: BYE from MacBook (%s)\n", j.is_object() ? j.value("reason", "").c_str() : "");
@@ -256,6 +269,7 @@ class Daemon {
     video_.reset();
     session_.clear();
     input_.set_active(false);
+    storage_.session_ended();
     fprintf(stderr, "session: ended\n");
   }
 
@@ -265,6 +279,7 @@ class Daemon {
 
   Options opt_;
   Input input_;
+  Storage storage_;
   int timer_ = -1;
   int listen_fd_ = -1;
   std::string listen_err_;
@@ -284,11 +299,13 @@ int main(int argc, char** argv) {
     std::string a = argv[i];
     if (a == "--iface" && i + 1 < argc) o.iface = argv[++i];
     else if (a == "--port" && i + 1 < argc) o.port = std::stoi(argv[++i]);
+    else if (a == "--storage-read-only") o.storage_read_only = true;
     else {
       fprintf(stderr,
               "usage: imacdisplayd [--iface IFACE] [--port PORT]\n"
               "  --iface  network interface to accept connections on (default thunderbolt0;\n"
-              "           anything else is for testing only)\n");
+              "           anything else is for testing only)\n"
+              "  --storage-read-only  mount USB drives read-only (testing)\n");
       return 2;
     }
   }
