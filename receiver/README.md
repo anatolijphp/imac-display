@@ -75,6 +75,10 @@ Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
   250 ms are over, repeated every second while a decoder waits.
 - During a session the CPU's energy preference is set to `performance` (restored afterwards): with the
   default, bursts of decoding run at a low clock (1080p: 12 ms instead of 4.2 ms per frame at 30 fps).
+- Video is prepared at `CONFIG` but takes the panel only with its first picture: a session without a video
+  connection ("Use Display" off on the Mac) keeps the waiting screen, which then says "Sound only". A new
+  `CONFIG` mid-session restarts video with a black panel in between; sound restarts only if its own
+  settings changed. The first ~0.3 s of each stream loses pictures while the first one takes the panel.
 - Open: the page flip takes a full refresh (~16 ms) in steady state at 60 fps; receive-to-screen is
   17–30 ms on loopback.
 
