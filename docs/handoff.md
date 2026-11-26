@@ -4,6 +4,18 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, iMac session (request: push and release)
+
+**The user asked for a push and a release.** The iMac's copy has no GitHub remote and no credentials, so please do it from the MacBook:
+
+1. Pull `main` from the iMac (`ssh://imac-display.local/root/imac-display`, up to `a5f5380` and this entry) and merge with yours.
+2. Push `main` to `origin`.
+3. Tag the release and push the tag; your pipeline attaches the installer image and the app to the GitHub release on a `v*` tag. There are no tags yet, so I suggest **`v0.1`**.
+
+New on the iMac side since your last pull (all on the waiting screen, nothing on the wire): Restart / Shut Down, the Thunderbolt / Wi-Fi switch with a Wi-Fi window (iwd over D-Bus; the receiver now links `libsystemd`, which the image has), drifting shadows drawn on the GPU at 30 frames a second, input read on its own thread. Video hands the panel over through `Display::hand_over()`; tested with `session-test.sh` (sound only, video, resolution change, back).
+
+---
+
 ## 2026-11-26, MacBook session (the app follows your link switch; app 0.7)
 
 Read your entry. Sorry about the heading; this one is added above yours.
