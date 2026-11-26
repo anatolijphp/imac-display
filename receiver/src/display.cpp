@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -35,42 +36,19 @@ void rounded_rect(cairo_t* cr, double x, double y, double w, double h, double r)
   cairo_close_path(cr);
 }
 
-// Background: a soft radial glow behind the icon fading to near-black, computed per pixel in floating
-// point and dithered (triangular noise of +-1 step) to 8 bits. A plain 8-bit dark gradient has only ~20
-// grey levels over the screen height, which shows as wide bands, more so after the panel's upscaling.
-void paint_background(cairo_surface_t* surf, int w, int h) {
-  cairo_surface_flush(surf);
-  uint8_t* px = cairo_image_surface_get_data(surf);
-  int stride = cairo_image_surface_get_stride(surf);
-  const double cx = w * 0.5, cy = h * 0.40, radius = h * 1.05;
-  // Centre and edge colours in linear 0..255 sRGB units (slightly cool, like macOS dark).
-  const double c0[3] = {44, 45, 50}, c1[3] = {8, 8, 10};
-  uint32_t seed = 0x9e3779b9u;
-  auto rnd = [&seed]() {  // xorshift32 -> [0,1)
-    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-    return (seed >> 8) * (1.0 / 16777216.0);
-  };
-  for (int y = 0; y < h; y++) {
-    uint32_t* row = (uint32_t*)(px + y * stride);
-    double dy = (y - cy) / radius;
-    for (int x = 0; x < w; x++) {
-      double dx = (x - cx) / radius;
-      double t = std::sqrt(dx * dx + dy * dy);
-      t = t > 1 ? 1 : t;
-      t = t * t * (3 - 2 * t);           // smoothstep: soft centre, gentle fall-off
-      double n = rnd() + rnd() - 1.0;    // triangular dither, -1..1 steps, same for r, g, b
-      uint32_t out = 0;
-      for (int c = 0; c < 3; c++) {
-        double v = c0[c] + (c1[c] - c0[c]) * t + n;
-        int iv = int(std::lround(v));
-        iv = iv < 0 ? 0 : iv > 255 ? 255 : iv;
-        out |= uint32_t(iv) << (16 - 8 * c);
-      }
-      row[x] = out;
-    }
-  }
-  cairo_surface_mark_dirty(surf);
-}
+// Background colours: a soft radial glow behind the icon fading to near-black (slightly cool, like macOS
+// dark), in 0..255 sRGB units. Dithered to 8 bits (a plain 8-bit dark gradient shows as wide bands).
+constexpr double kGlow[3] = {44, 45, 50}, kEdge[3] = {8, 8, 10};
+
+// Soft shadows drifting over the glow: each a large Gaussian blob on a slow Lissajous path.
+// Positions and amplitudes in screen heights, periods in seconds, depth = darkening at the centre.
+struct Shadow { double x, y, ax, ay, px, py, phase, radius, depth; };
+constexpr Shadow kShadows[] = {
+    {0.55, 0.30, 0.45, 0.20, 83, 61, 0.0, 0.42, 0.30},
+    {1.30, 0.75, 0.40, 0.25, 97, 71, 1.7, 0.50, 0.26},
+    {0.20, 0.85, 0.35, 0.18, 67, 89, 3.1, 0.38, 0.24},
+    {1.10, 0.10, 0.50, 0.15, 113, 53, 4.4, 0.45, 0.22},
+};
 
 void centered_text(cairo_t* cr, const std::string& t, double cx, double y, double size, cairo_font_weight_t wt) {
   cairo_select_font_face(cr, kFont, CAIRO_FONT_SLANT_NORMAL, wt);
@@ -147,6 +125,62 @@ void draw_power_icon(cairo_t* cr, double cx, double cy, double r, double lw) {
   cairo_move_to(cr, cx, cy - r * 1.15);
   cairo_line_to(cr, cx, cy - r * 0.15);
   cairo_stroke(cr);
+}
+
+// Wi-Fi symbol: three arcs over a dot, fanning upwards. bars < 0: all full; else 1..4 shown full, rest faint.
+void draw_wifi_icon(cairo_t* cr, double cx, double cy, double r, double lw, int bars = -1, double alpha = 1.0) {
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_width(cr, lw);
+  // The dot sits low, the arcs fan out above it. Placed so the whole symbol (top of the outer arc to
+  // the bottom of the dot) is centred on cy.
+  double base = cy + 0.63 * r - 0.2 * lw;
+  for (int i = 0; i < 4; i++) {
+    bool on = bars < 0 || i < bars;
+    cairo_set_source_rgba(cr, 1, 1, 1, alpha * (on ? 1.0 : 0.25));
+    if (i == 0) {
+      cairo_arc(cr, cx, base, lw * 0.9, 0, 2 * M_PI);
+      cairo_fill(cr);
+      continue;
+    }
+    double rr = r * 0.42 * i;
+    cairo_new_path(cr);
+    cairo_arc(cr, cx, base, rr, -M_PI / 2 - 0.78, -M_PI / 2 + 0.78);
+    cairo_stroke(cr);
+  }
+}
+
+void draw_lock(cairo_t* cr, double x, double y, double s) {  // x, y: top left; ~22 x 28 units
+  cairo_set_line_width(cr, 3 * s);
+  cairo_new_path(cr);
+  cairo_arc(cr, x + 11 * s, y + 11 * s, 7 * s, M_PI, 2 * M_PI);
+  cairo_stroke(cr);
+  rounded_rect(cr, x, y + 11 * s, 22 * s, 17 * s, 3 * s);
+  cairo_fill(cr);
+}
+
+void left_text(cairo_t* cr, const std::string& t, double x, double y, double size, cairo_font_weight_t wt) {
+  cairo_select_font_face(cr, kFont, CAIRO_FONT_SLANT_NORMAL, wt);
+  cairo_set_font_size(cr, size);
+  cairo_move_to(cr, x, y);
+  cairo_show_text(cr, t.c_str());
+}
+
+// Text typed on a keyboard with the US layout (the password field). 0: not a character.
+char key_char(uint16_t code, bool shift, bool caps) {
+  static const char* lower[] = {"", "", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "", "",
+                                "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "[", "]", "", "", "a", "s",
+                                "d", "f", "g", "h", "j", "k", "l", ";", "'", "`", "", "\\", "z", "x", "c", "v",
+                                "b", "n", "m", ",", ".", "/"};
+  static const char* upper[] = {"", "", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "", "",
+                                "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "{", "}", "", "", "A", "S",
+                                "D", "F", "G", "H", "J", "K", "L", ":", "\"", "~", "", "|", "Z", "X", "C", "V",
+                                "B", "N", "M", "<", ">", "?"};
+  if (code == KEY_SPACE) return ' ';
+  if (code >= sizeof lower / sizeof lower[0] || !lower[code][0]) return 0;
+  char c = lower[code][0];
+  bool letter = c >= 'a' && c <= 'z';
+  bool up = letter ? (shift != caps) : shift;
+  return up ? upper[code][0] : c;
 }
 
 }  // namespace
@@ -244,9 +278,21 @@ bool Display::open() {
   }
   // If we run on a VT (systemd TTYPath), switch it to graphics mode: the text console stops drawing.
   if (isatty(0) && ioctl(0, KDSETMODE, KD_GRAPHICS) == 0) tty_ = 0;
-  base_ = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
-  bg_ = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
-  paint_background(bg_, w_, h_);
+  base_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w_, h_);
+  fw_ = (w_ + kCell - 1) / kCell;
+  fh_ = (h_ + kCell - 1) / kCell;
+  for (auto& f : field_) f.assign(size_t(fw_ + 2) * (fh_ + 2), 0);
+  noise_.resize(128 * 128);
+  uint32_t seed = 0x9e3779b9u;
+  auto rnd = [&seed]() {  // xorshift32 -> 0..255
+    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+    return int(seed >> 24);
+  };
+  for (auto& n : noise_) n = int16_t(rnd() + rnd() - 255);  // triangular, about -1..1 step
+  spans_.assign(h_, {0, 0});
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  start_us_ = uint64_t(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
   px_ = w_ / 2.0;
   py_ = h_ * 0.62;
   dialog_ = Dialog::None;
@@ -287,8 +333,7 @@ void Display::close() {
   fd_ = -1;
   if (base_) cairo_surface_destroy(base_);
   base_ = nullptr;
-  if (bg_) cairo_surface_destroy(bg_);
-  bg_ = nullptr;
+
   delete (drmModeModeInfo*)mode_;
   mode_ = nullptr;
   paused_ = false;
@@ -297,8 +342,7 @@ void Display::close() {
 
 void Display::render_base(const Status& st) {
   cairo_t* cr = cairo_create(base_);
-  cairo_set_source_surface(cr, bg_, 0, 0);
-  cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);  // transparent: the moving background shows through
   cairo_paint(cr);
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
   double s = h_ / 2160.0, cx = w_ / 2.0;
@@ -340,7 +384,9 @@ void Display::render_base(const Status& st) {
   }
 
   // Restart and Shut Down, like the buttons under the macOS login window: round, translucent, label below.
-  btn_restart_ = btn_shutdown_ = dlg_cancel_ = dlg_confirm_ = seg_tb_ = seg_wifi_ = Rect{};
+  btn_restart_ = btn_shutdown_ = btn_wifi_ = dlg_cancel_ = dlg_confirm_ = seg_tb_ = seg_wifi_ = dlg_done_ =
+      show_pass_ = Rect{};
+  row_rects_.clear();
   if (st.menu) {
     // Link switch: a two-part control, the one in use filled.
     const double sw = 280 * s, sh = 68 * s, sy = h_ - 560 * s;
@@ -359,9 +405,40 @@ void Display::render_base(const Status& st) {
         else cairo_set_source_rgba(cr, 1, 1, 1, 0.14);
         cairo_fill(cr);
       }
+      bool wifi_half = g.hit == Hit::LinkWifi;
+      // The Wi-Fi half also holds a small icon button at the toggle's right end.
+      const double d = 42 * s, gap = 0;
+      cairo_select_font_face(cr, kFont, CAIRO_FONT_SLANT_NORMAL, g.on ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+      cairo_set_font_size(cr, 28 * s);
+      cairo_text_extents_t te;
+      cairo_text_extents(cr, g.label, &te);
+      // Wi-Fi's label moves a little to the left, so it has some room from the icon at the right end.
+      double label_cx = g.rc->x + g.rc->w / 2 - (wifi_half ? d * 0.45 : 0);
+      (void)gap;
       cairo_set_source_rgba(cr, 1, 1, 1, g.on ? 1.0 : 0.7);
-      centered_text(cr, g.label, g.rc->x + g.rc->w / 2, g.rc->y + g.rc->h / 2 + 10 * s, 28 * s,
+      centered_text(cr, g.label, label_cx, g.rc->y + g.rc->h / 2 + 10 * s, 28 * s,
                     g.on ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+      if (wifi_half) {
+        // Wi-Fi status icon button: full when connected, faint and struck through when not.
+        // Always a button: clicking it opens the Wi-Fi window.
+        bool connected = false;
+        for (auto& r : wifi_rows_) connected = connected || r.connected;
+        // At the toggle's right end, concentric with its rounded edge.
+        double icx = g.rc->x + g.rc->w - sh / 2, icy = g.rc->y + sh / 2;
+        btn_wifi_ = Rect{icx - d / 2, icy - d / 2, d, d};
+        bool hot = dialog_ == Dialog::None && hover_ == Hit::WifiButton;
+        cairo_arc(cr, icx, icy, d / 2, 0, 2 * M_PI);
+        cairo_set_source_rgba(cr, 1, 1, 1, hot ? 0.32 : 0.16);
+        cairo_fill(cr);
+        draw_wifi_icon(cr, icx, icy, 13 * s, 3 * s, connected ? -1 : 0, connected ? 1.0 : 0.9);
+        if (!connected) {
+          cairo_set_source_rgba(cr, 1, 1, 1, 0.85);
+          cairo_set_line_width(cr, 3 * s);
+          cairo_move_to(cr, icx - 10 * s, icy + 10 * s);
+          cairo_line_to(cr, icx + 10 * s, icy - 10 * s);
+          cairo_stroke(cr);
+        }
+      }
     }
     if (st.wifi) {
       cairo_set_source_rgba(cr, 1, 1, 1, 0.45);
@@ -370,9 +447,9 @@ void Display::render_base(const Status& st) {
     }
 
     const double r = 56 * s, gap = 300 * s, by = h_ - 330 * s;
-    struct B { Rect* rect; double x; const char* label; Hit hit; bool restart; };
-    B bs[2] = {{&btn_restart_, cx - gap / 2, "Restart", Hit::Restart, true},
-               {&btn_shutdown_, cx + gap / 2, "Shut Down", Hit::ShutDown, false}};
+    struct B { Rect* rect; double x; const char* label; Hit hit; int icon; };
+    B bs[2] = {{&btn_restart_, cx - gap / 2, "Restart", Hit::Restart, 0},
+               {&btn_shutdown_, cx + gap / 2, "Shut Down", Hit::ShutDown, 1}};
     for (auto& b : bs) {
       bool active = dialog_ == Dialog::None;
       bool hot = active && hover_ == b.hit;
@@ -380,8 +457,9 @@ void Display::render_base(const Status& st) {
       cairo_arc(cr, b.x, by, r, 0, 2 * M_PI);
       cairo_fill(cr);
       cairo_set_source_rgba(cr, 1, 1, 1, active ? 0.95 : 0.5);
-      if (b.restart) draw_restart_icon(cr, b.x, by, r * 0.42, 6 * s);
-      else draw_power_icon(cr, b.x, by, r * 0.42, 6 * s);
+      if (b.icon == 0) draw_restart_icon(cr, b.x, by, r * 0.42, 6 * s);
+      else if (b.icon == 1) draw_power_icon(cr, b.x, by, r * 0.42, 6 * s);
+      else draw_wifi_icon(cr, b.x, by, r * 0.55, 6 * s, -1, active ? 0.95 : 0.5);
       cairo_set_source_rgba(cr, 1, 1, 1, hot ? 1.0 : 0.75);
       centered_text(cr, b.label, b.x, by + r + 50 * s, 28 * s, CAIRO_FONT_WEIGHT_NORMAL);
       *b.rect = Rect{b.x - r * 1.4, by - r, r * 2.8, r * 2 + 70 * s};  // circle and label
@@ -392,8 +470,14 @@ void Display::render_base(const Status& st) {
   if (dialog_ != Dialog::None) {
     cairo_set_source_rgba(cr, 0, 0, 0, 0.45);  // dim the screen behind it
     cairo_paint(cr);
-    const double dw = 1240 * s, dh = dialog_ == Dialog::Busy ? 220 * s : 400 * s;
-    const double dx = cx - dw / 2, dy = h_ / 2.0 - dh / 2;
+    const size_t nrows = std::min<size_t>(wifi_rows_.size(), 8);
+    const double rh = 88 * s;
+    const double dw = 1240 * s,
+                 dh = dialog_ == Dialog::Busy           ? 220 * s
+                      : dialog_ == Dialog::Wifi         ? 330 * s + 8 * rh  // fixed: rows coming in do not move it
+                      : dialog_ == Dialog::WifiPassword ? 520 * s
+                                                        : 400 * s;
+    const double dx = cx - dw / 2, dy = std::min(h_ / 2.0 - dh / 2, h_ - 600 * s - dh);  // clear of the switch
     rounded_rect(cr, dx, dy, dw, dh, 28 * s);
     cairo_set_source_rgb(cr, 0.17, 0.17, 0.19);
     cairo_fill_preserve(cr);
@@ -403,6 +487,103 @@ void Display::render_base(const Status& st) {
     if (dialog_ == Dialog::Busy) {
       cairo_set_source_rgb(cr, 1, 1, 1);
       centered_text(cr, busy_text_, cx, dy + dh / 2 + 18 * s, 48 * s, CAIRO_FONT_WEIGHT_BOLD);
+    } else if (dialog_ == Dialog::Wifi) {
+      cairo_set_source_rgb(cr, 1, 1, 1);
+      centered_text(cr, "Wi-Fi", cx, dy + 90 * s, 46 * s, CAIRO_FONT_WEIGHT_BOLD);
+      std::string line = wifi_status_;
+      if (line.empty()) {
+        std::string cur;
+        for (auto& r : wifi_rows_) if (r.connected) cur = r.name;
+        line = !cur.empty() ? "Connected to \u201c" + cur + "\u201d" : wifi_scanning_ ? "Looking for networks\u2026" : "Not connected";
+      }
+      cairo_set_source_rgb(cr, kGrey[0], kGrey[1], kGrey[2]);
+      centered_text(cr, line, cx, dy + 145 * s, 30 * s, CAIRO_FONT_WEIGHT_NORMAL);
+      double y0 = dy + 190 * s;
+      if (nrows == 0) {
+        centered_text(cr, wifi_scanning_ ? "Looking for networks\u2026" : "No networks found", cx, y0 + rh / 2 + 10 * s,
+                      32 * s, CAIRO_FONT_WEIGHT_NORMAL);
+      }
+      for (size_t i = 0; i < nrows; i++) {
+        const WifiRow& w = wifi_rows_[i];
+        Rect rc{dx + 40 * s, y0 + i * rh, dw - 80 * s, rh - 8 * s};
+        row_rects_.push_back(rc);
+        if (hover_row_ == int(i) && !w.connected) {
+          rounded_rect(cr, rc.x, rc.y, rc.w, rc.h, 14 * s);
+          cairo_set_source_rgba(cr, 1, 1, 1, 0.10);
+          cairo_fill(cr);
+        }
+        double ty2 = rc.y + rc.h / 2 + 12 * s;
+        if (w.connected) {  // check mark
+          cairo_set_source_rgb(cr, kBlue[0], kBlue[1], kBlue[2]);
+          cairo_set_line_width(cr, 5 * s);
+          cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+          cairo_move_to(cr, rc.x + 26 * s, ty2 - 12 * s);
+          cairo_line_to(cr, rc.x + 38 * s, ty2);
+          cairo_line_to(cr, rc.x + 60 * s, ty2 - 26 * s);
+          cairo_stroke(cr);
+        }
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        left_text(cr, w.name, rc.x + 84 * s, ty2, 34 * s, w.connected ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL);
+        double rx = rc.x + rc.w - 70 * s;
+        draw_wifi_icon(cr, rx, rc.y + rc.h / 2 - 6 * s, 34 * s, 4.5 * s, w.bars, 0.9);
+        if (w.secured) {
+          cairo_set_source_rgba(cr, 1, 1, 1, 0.6);
+          draw_lock(cr, rx - 80 * s, rc.y + rc.h / 2 - 16 * s, 1.1 * s);
+        }
+      }
+      dlg_done_ = Rect{dx + dw - 340 * s, dy + dh - 116 * s, 300 * s, 76 * s};
+      rounded_rect(cr, dlg_done_.x, dlg_done_.y, dlg_done_.w, dlg_done_.h, 16 * s);
+      cairo_set_source_rgba(cr, kBlue[0], kBlue[1], kBlue[2], hover_ == Hit::Done ? 1.0 : 0.85);
+      cairo_fill(cr);
+      cairo_set_source_rgb(cr, 1, 1, 1);
+      centered_text(cr, "Done", dlg_done_.x + dlg_done_.w / 2, dlg_done_.y + dlg_done_.h / 2 + 12 * s, 32 * s,
+                    CAIRO_FONT_WEIGHT_BOLD);
+    } else if (dialog_ == Dialog::WifiPassword) {
+      cairo_set_source_rgb(cr, 1, 1, 1);
+      centered_text(cr, "Enter the password for \u201c" + wifi_pick_ + "\u201d", cx, dy + 100 * s, 40 * s,
+                    CAIRO_FONT_WEIGHT_BOLD);
+      Rect f{dx + 120 * s, dy + 160 * s, dw - 240 * s, 90 * s};
+      rounded_rect(cr, f.x, f.y, f.w, f.h, 14 * s);
+      cairo_set_source_rgb(cr, 0.09, 0.09, 0.10);
+      cairo_fill_preserve(cr);
+      cairo_set_source_rgba(cr, kBlue[0], kBlue[1], kBlue[2], 0.9);
+      cairo_set_line_width(cr, 3 * s);
+      cairo_stroke(cr);
+      std::string shown;
+      if (wifi_show_pass_) shown = wifi_pass_;
+      else for (size_t i = 0; i < wifi_pass_.size(); i++) shown += "\u2022";
+      cairo_set_source_rgb(cr, 1, 1, 1);
+      left_text(cr, shown + "|", f.x + 30 * s, f.y + f.h / 2 + 13 * s, 36 * s, CAIRO_FONT_WEIGHT_NORMAL);
+      if (!wifi_pass_error_.empty()) {
+        cairo_set_source_rgb(cr, 1.0, 0.45, 0.42);
+        centered_text(cr, wifi_pass_error_, cx, dy + 300 * s, 30 * s, CAIRO_FONT_WEIGHT_NORMAL);
+      }
+      // "Show password" check box (also useful to see what a non-US keyboard typed).
+      show_pass_ = Rect{f.x, dy + 330 * s, 420 * s, 50 * s};
+      rounded_rect(cr, f.x, dy + 338 * s, 34 * s, 34 * s, 7 * s);
+      if (wifi_show_pass_) {
+        cairo_set_source_rgb(cr, kBlue[0], kBlue[1], kBlue[2]);
+        cairo_fill(cr);
+      } else {
+        cairo_set_source_rgba(cr, 1, 1, 1, hover_ == Hit::ShowPass ? 0.6 : 0.4);
+        cairo_set_line_width(cr, 3 * s);
+        cairo_stroke(cr);
+      }
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.85);
+      left_text(cr, "Show password", f.x + 52 * s, dy + 366 * s, 30 * s, CAIRO_FONT_WEIGHT_NORMAL);
+      const double bw = 300 * s, bh = 76 * s, byy = dy + dh - bh - 44 * s;
+      dlg_cancel_ = Rect{cx - bw - 16 * s, byy, bw, bh};
+      dlg_confirm_ = Rect{cx + 16 * s, byy, bw, bh};
+      for (int k = 0; k < 2; k++) {
+        Rect& b = k ? dlg_confirm_ : dlg_cancel_;
+        bool hot = hover_ == (k ? Hit::Confirm : Hit::Cancel);
+        rounded_rect(cr, b.x, b.y, b.w, b.h, 16 * s);
+        if (k) cairo_set_source_rgba(cr, kBlue[0], kBlue[1], kBlue[2], wifi_pass_.size() >= 8 ? (hot ? 1.0 : 0.85) : 0.35);
+        else cairo_set_source_rgba(cr, 1, 1, 1, hot ? 0.28 : 0.16);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, 1, 1, 1);
+        centered_text(cr, k ? "Join" : "Cancel", b.x + b.w / 2, b.y + b.h / 2 + 12 * s, 32 * s, CAIRO_FONT_WEIGHT_BOLD);
+      }
     } else {
       bool restart = dialog_ == Dialog::Restart;
       cairo_set_source_rgb(cr, 1, 1, 1);
@@ -435,12 +616,107 @@ void Display::render_base(const Status& st) {
   }
   cairo_destroy(cr);
   cairo_surface_flush(base_);
+  content_spans();
+  force_frame_ = true;
 }
 
-void Display::copy_rect(int x, int y, int w, int h) {
+void Display::content_spans() {
   const uint8_t* src = cairo_image_surface_get_data(base_);
   int stride = cairo_image_surface_get_stride(base_);
-  for (int r = y; r < y + h && r < h_; r++) memcpy(map_ + r * pitch_ + x * 4, src + r * stride + x * 4, w * 4);
+  for (int y = 0; y < h_; y++) {
+    const uint32_t* row = (const uint32_t*)(src + size_t(y) * stride);
+    int x0 = 0, x1 = w_;
+    while (x0 < w_ && !(row[x0] >> 24)) x0++;
+    while (x1 > x0 && !(row[x1 - 1] >> 24)) x1--;
+    spans_[y] = {x0, x1};
+  }
+}
+
+void Display::update_field(double t) {
+  const double cx = w_ * 0.5, cy = h_ * 0.40, radius = h_ * 1.05;
+  double sx[4], sy[4];
+  for (int k = 0; k < 4; k++) {
+    const Shadow& d = kShadows[k];
+    sx[k] = h_ * (d.x + d.ax * std::sin(2 * M_PI * t / d.px + d.phase));
+    sy[k] = h_ * (d.y + d.ay * std::sin(2 * M_PI * t / d.py + d.phase * 1.3));
+  }
+  for (int gy = 0; gy <= fh_; gy++) {
+    double py = gy * kCell, dy = (py - cy) / radius;
+    for (int gx = 0; gx <= fw_; gx++) {
+      double px = gx * kCell, dx = (px - cx) / radius;
+      double r = std::min(1.0, std::sqrt(dx * dx + dy * dy));
+      r = r * r * (3 - 2 * r);  // smoothstep: soft centre, gentle fall-off
+      double shade = 1.0;
+      for (int k = 0; k < 4; k++) {
+        double rr = kShadows[k].radius * h_;
+        double d2 = ((px - sx[k]) * (px - sx[k]) + (py - sy[k]) * (py - sy[k])) / (rr * rr);
+        shade *= 1.0 - kShadows[k].depth * std::exp(-d2);
+      }
+      size_t i = size_t(gy) * (fw_ + 2) + gx;
+      for (int c = 0; c < 3; c++) field_[c][i] = int32_t((kGlow[c] + (kEdge[c] - kGlow[c]) * r) * shade * 256.0);
+    }
+  }
+}
+
+// Bilinear from the field (fixed point), plus the dither tile, then the content blended on top
+// (premultiplied ARGB: out = content + background * (1 - alpha)). Each row is built in memory and
+// written to the panel in one go (the scanout buffer is slow to read and best written in sequence).
+void Display::compose_rows(uint8_t* dst, int pitch, int y0, int y1) {
+  const uint8_t* src = cairo_image_surface_get_data(base_);
+  const int stride = cairo_image_surface_get_stride(base_);
+  std::vector<uint32_t> out(w_);
+  std::vector<int32_t> col[3];
+  for (auto& c : col) c.resize(fw_ + 2);
+  const int fstride = fw_ + 2;
+  for (int y = y0; y < y1; y++) {
+    int gy = y / kCell, fy = y % kCell;
+    for (int c = 0; c < 3; c++) {  // vertical interpolation once per field column
+      const int32_t* a = &field_[c][size_t(gy) * fstride];
+      const int32_t* b = a + fstride;
+      for (int gx = 0; gx <= fw_; gx++) col[c][gx] = a[gx] * (kCell - fy) + b[gx] * fy;
+    }
+    const int16_t* nrow = &noise_[(y & 127) * 128];
+    // Across each field cell the value changes linearly: start and step per channel, no multiplies
+    // per pixel. Field values stay well inside 0..255 (8..50 plus a dither step), so no clamping.
+    for (int gx = 0, x = 0; x < w_; gx++) {
+      int32_t v0 = col[0][gx] * kCell, v1 = col[1][gx] * kCell, v2 = col[2][gx] * kCell;  // 8.8 * 256
+      const int32_t d0 = col[0][gx + 1] - col[0][gx], d1 = col[1][gx + 1] - col[1][gx], d2 = col[2][gx + 1] - col[2][gx];
+      const int xe = std::min(x + kCell, w_);
+      for (; x < xe; x++) {
+        const int n = nrow[x & 127] + 128;
+        out[x] = uint32_t(((v0 >> 8) + n) >> 8) << 16 | uint32_t(((v1 >> 8) + n) >> 8) << 8 | uint32_t(((v2 >> 8) + n) >> 8);
+        v0 += d0; v1 += d1; v2 += d2;
+      }
+    }
+    auto [x0, x1] = spans_[y];
+    const uint32_t* crow = (const uint32_t*)(src + size_t(y) * stride);
+    for (int x = x0; x < x1; x++) {
+      uint32_t c = crow[x], a = c >> 24;
+      if (!a) continue;
+      if (a == 255) { out[x] = c & 0xFFFFFF; continue; }
+      uint32_t bgp = out[x], inv = 255 - a, r = 0;
+      for (int sh = 0; sh <= 16; sh += 8) {
+        uint32_t v = ((c >> sh) & 0xFF) + (((bgp >> sh) & 0xFF) * inv + 127) / 255;
+        r |= std::min<uint32_t>(v, 255) << sh;
+      }
+      out[x] = r;
+    }
+    memcpy(dst + size_t(y) * pitch, out.data(), size_t(w_) * 4);
+  }
+}
+
+void Display::compose(uint8_t* dst, int pitch) {
+  const int n = 6;  // rows in parallel: ~25 ms of work at 3840x2160 spread over the CPU's threads
+  std::vector<std::thread> th;
+  for (int i = 0; i < n; i++)
+    th.emplace_back([this, dst, pitch, i] { compose_rows(dst, pitch, h_ * i / n, h_ * (i + 1) / n); });
+  for (auto& t : th) t.join();
+}
+
+void Display::frame() {
+  if (fd_ < 0 || !has_status_ || paused_) return;
+  update_field((mono_us() - start_us_) / 1e6);
+  compose(map_, int(pitch_));
 }
 
 ScreenTarget Display::target() const {
@@ -460,7 +736,6 @@ void Display::resume() {
   if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) != 0)
     fprintf(stderr, "display: taking the screen back failed: %s\n", strerror(errno));
   has_status_ = false;  // force a full redraw on the next show()
-  if (base_) { copy_rect(0, 0, w_, h_); drmModeDirtyFB(fd_, fb_id_, nullptr, 0); }
 }
 
 void Display::pause() {
@@ -492,19 +767,32 @@ void Display::show(const Status& s) {
   status_ = s;
   has_status_ = true;
   render_base(s);
-  copy_rect(0, 0, w_, h_);
-  drmModeDirtyFB(fd_, fb_id_, nullptr, 0);
   animate();
 }
 
 void Display::animate() {
   if (fd_ < 0 || !has_status_ || paused_) return;
   frame_++;
-  // Draw the dots on a copy of the base picture in that small rectangle, then copy it out.
+  // The whole screen (drifting background and content) 3 times a second: the shadows move a fraction
+  // of a grey level per step, and composing 3840x2160 costs ~65 ms of CPU. The dots, 15 times a second,
+  // are drawn on a saved copy of their rectangle.
+  if (force_frame_ || frame_ % 5 == 0) {
+    force_frame_ = false;
+    frame();
+    dots_bg_.resize(size_t(dots_w_) * dots_h_);
+    for (int r = 0; r < dots_h_; r++)
+      memcpy(&dots_bg_[size_t(r) * dots_w_], map_ + (dots_y_ + r) * pitch_ + dots_x_ * 4, dots_w_ * 4);
+  }
+  if (dialog_ != Dialog::None) { drmModeDirtyFB(fd_, fb_id_, nullptr, 0); return; }
   cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_RGB24, dots_w_, dots_h_);
+  {
+    cairo_surface_flush(tmp);
+    uint8_t* d = cairo_image_surface_get_data(tmp);
+    int ds = cairo_image_surface_get_stride(tmp);
+    for (int r = 0; r < dots_h_; r++) memcpy(d + r * ds, &dots_bg_[size_t(r) * dots_w_], dots_w_ * 4);
+    cairo_surface_mark_dirty(tmp);
+  }
   cairo_t* cr = cairo_create(tmp);
-  cairo_set_source_surface(cr, base_, -dots_x_, -dots_y_);
-  cairo_paint(cr);
   {
     double t = frame_ / 15.0;  // seconds at 15 fps
     for (int i = 0; i < 3; i++) {
@@ -525,7 +813,14 @@ void Display::animate() {
 }
 
 bool Display::save_png(const std::string& path) const {
-  return base_ && cairo_surface_write_to_png(base_, path.c_str()) == CAIRO_STATUS_SUCCESS;
+  if (!base_ || fd_ < 0) return false;
+  cairo_surface_t* img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
+  cairo_surface_flush(img);
+  const_cast<Display*>(this)->compose(cairo_image_surface_get_data(img), cairo_image_surface_get_stride(img));
+  cairo_surface_mark_dirty(img);
+  bool ok = cairo_surface_write_to_png(img, path.c_str()) == CAIRO_STATUS_SUCCESS;
+  cairo_surface_destroy(img);
+  return ok;
 }
 
 // --- pointer, buttons, dialog -----------------------------------------------------------------
@@ -533,8 +828,6 @@ bool Display::save_png(const std::string& path) const {
 void Display::redraw() {
   if (fd_ < 0 || paused_ || !has_status_) return;
   render_base(status_);
-  copy_rect(0, 0, w_, h_);
-  drmModeDirtyFB(fd_, fb_id_, nullptr, 0);
   animate();
   if (!snap_dir_.empty()) {
     char name[32];
@@ -542,10 +835,9 @@ void Display::redraw() {
     // PNG compression of a 4K picture takes about a second: on a copy, in the background, so the
     // pointer keeps up while testing.
     cairo_surface_t* copy = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
-    cairo_t* cr = cairo_create(copy);
-    cairo_set_source_surface(cr, base_, 0, 0);
-    cairo_paint(cr);
-    cairo_destroy(cr);
+    cairo_surface_flush(copy);
+    compose(cairo_image_surface_get_data(copy), cairo_image_surface_get_stride(copy));
+    cairo_surface_mark_dirty(copy);
     std::thread([copy, path = snap_dir_ + name] {
       cairo_surface_write_to_png(copy, path.c_str());
       cairo_surface_destroy(copy);
@@ -604,14 +896,22 @@ void Display::cursor(bool on) {
 }
 
 Display::Hit Display::hit_test() const {
-  if (dialog_ == Dialog::Restart || dialog_ == Dialog::ShutDown) {
+  if (dialog_ == Dialog::Restart || dialog_ == Dialog::ShutDown || dialog_ == Dialog::WifiPassword) {
     if (dlg_cancel_.in(px_, py_)) return Hit::Cancel;
     if (dlg_confirm_.in(px_, py_)) return Hit::Confirm;
+    if (dialog_ == Dialog::WifiPassword && show_pass_.in(px_, py_)) return Hit::ShowPass;
+    return Hit::None;
+  }
+  if (dialog_ == Dialog::Wifi) {
+    if (dlg_done_.in(px_, py_)) return Hit::Done;
+    for (auto& r : row_rects_)
+      if (r.in(px_, py_)) return Hit::Row;
     return Hit::None;
   }
   if (dialog_ == Dialog::None) {
     if (btn_restart_.in(px_, py_)) return Hit::Restart;
     if (btn_shutdown_.in(px_, py_)) return Hit::ShutDown;
+    if (btn_wifi_.in(px_, py_)) return Hit::WifiButton;  // inside the Wi-Fi half: checked first
     if (seg_tb_.in(px_, py_)) return Hit::LinkTb;
     if (seg_wifi_.in(px_, py_)) return Hit::LinkWifi;
   }
@@ -620,8 +920,13 @@ Display::Hit Display::hit_test() const {
 
 void Display::update_hover() {
   Hit h = hit_test();
-  if (h != hover_) {
+  int row = -1;
+  if (h == Hit::Row)
+    for (size_t i = 0; i < row_rects_.size(); i++)
+      if (row_rects_[i].in(px_, py_)) row = int(i);
+  if (h != hover_ || row != hover_row_) {
     hover_ = h;
+    hover_row_ = row;
     redraw();
   }
 }
@@ -642,6 +947,8 @@ void Display::pointer_motion(int dx, int dy) {
 Display::Action Display::press(uint16_t code, int value) {
   if (code == KEY_LEFTCTRL || code == KEY_RIGHTCTRL) ctrl_down_ = value;
   if (code == KEY_LEFTALT || code == KEY_RIGHTALT) alt_down_ = value;
+  if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) shift_down_ = value;
+  if (code == KEY_CAPSLOCK && value) caps_ = !caps_;
   if (fd_ < 0 || paused_ || !has_status_ || !status_.menu || dialog_ == Dialog::Busy) return Action::None;
   bool asking = dialog_ == Dialog::Restart || dialog_ == Dialog::ShutDown;
   auto open_dialog = [&](Dialog d) {
@@ -666,6 +973,57 @@ Display::Action Display::press(uint16_t code, int value) {
     fprintf(stderr, "display: cancelled\n");
   };
 
+  // Wi-Fi panel and its password box.
+  if (dialog_ == Dialog::Wifi || dialog_ == Dialog::WifiPassword) {
+    bool pw = dialog_ == Dialog::WifiPassword;
+    auto back_to_list = [&]() {
+      dialog_ = Dialog::Wifi;
+      wifi_pass_.clear();
+      wifi_pass_error_.clear();
+      hover_ = Hit::None;
+      redraw();
+      update_hover();
+    };
+    auto close_panel = [&]() {
+      dialog_ = Dialog::None;
+      wifi_pass_.clear();
+      hover_ = Hit::None;
+      redraw();
+      update_hover();
+    };
+    auto join_with_password = [&]() {
+      if (wifi_pass_.size() < 8) return Action::None;  // WPA passwords are 8 to 63 characters
+      dialog_ = Dialog::Wifi;
+      wifi_pass_error_.clear();
+      hover_ = Hit::None;
+      redraw();
+      return Action::WifiPassword;
+    };
+    if (code == BTN_LEFT) {
+      if (value) { pressed_ = hover_; return Action::None; }
+      Hit was = pressed_;
+      pressed_ = Hit::None;
+      if (was == Hit::None || was != hit_test()) return Action::None;
+      if (!pw && was == Hit::Done) close_panel();
+      else if (!pw && was == Hit::Row && hover_row_ >= 0 && hover_row_ < int(wifi_rows_.size())) {
+        const WifiRow& r = wifi_rows_[hover_row_];
+        if (r.connected) return Action::None;
+        wifi_pick_ = r.name;
+        return Action::WifiJoin;
+      } else if (pw && was == Hit::Cancel) back_to_list();
+      else if (pw && was == Hit::Confirm) return join_with_password();
+      else if (pw && was == Hit::ShowPass) { wifi_show_pass_ = !wifi_show_pass_; redraw(); }
+      return Action::None;
+    }
+    if (!value) return Action::None;
+    if (code == KEY_ESC) { if (pw) back_to_list(); else close_panel(); return Action::None; }
+    if (!pw) return Action::None;
+    if (code == KEY_ENTER || code == KEY_KPENTER) return join_with_password();
+    if (code == KEY_BACKSPACE) { if (!wifi_pass_.empty()) { wifi_pass_.pop_back(); redraw(); } return Action::None; }
+    if (char c = key_char(code, shift_down_, caps_); c && wifi_pass_.size() < 63) { wifi_pass_ += c; redraw(); }
+    return Action::None;
+  }
+
   if (code == BTN_LEFT) {
     if (value) {
       pressed_ = hover_;
@@ -680,9 +1038,16 @@ Display::Action Display::press(uint16_t code, int value) {
       case Hit::ShutDown: open_dialog(Dialog::ShutDown); break;
       case Hit::Cancel: cancel(); break;
       case Hit::Confirm: return confirm();
+      case Hit::WifiButton:
+        dialog_ = Dialog::Wifi;
+        wifi_status_.clear();
+        hover_ = Hit::None;
+        redraw();
+        update_hover();
+        return Action::WifiOpen;
       case Hit::LinkTb: if (status_.wifi) return Action::UseThunderbolt; break;
       case Hit::LinkWifi: if (!status_.wifi) return Action::UseWifi; break;
-      case Hit::None: break;
+      case Hit::None: case Hit::Row: case Hit::Done: case Hit::ShowPass: break;
     }
     return Action::None;
   }
@@ -713,4 +1078,38 @@ void Display::show_busy(const std::string& text) {
   hover_ = pressed_ = Hit::None;
   cursor(false);
   redraw();
+}
+
+void Display::set_wifi(std::vector<WifiRow> rows, bool scanning, const std::string& status) {
+  auto current = [](const std::vector<WifiRow>& v) {
+    for (auto& r : v) if (r.connected) return r.name;
+    return std::string();
+  };
+  bool label_changed = current(rows) != current(wifi_rows_);
+  wifi_rows_ = std::move(rows);
+  if (label_changed && dialog_ == Dialog::None) redraw();  // the network name above the switch
+  wifi_scanning_ = scanning;
+  wifi_status_ = status;
+  if (dialog_ == Dialog::Wifi) {
+    redraw();
+    update_hover();
+  }
+}
+
+void Display::ask_wifi_password(const std::string& name, const std::string& error) {
+  if (!wifi_open()) return;
+  fprintf(stderr, "display: asking for the Wi-Fi password of \"%s\"%s\n", name.c_str(), error.empty() ? "" : " again");
+  wifi_pick_ = name;
+  wifi_pass_.clear();
+  wifi_pass_error_ = error;
+  dialog_ = Dialog::WifiPassword;
+  hover_ = Hit::None;
+  redraw();
+  update_hover();
+}
+
+std::string Display::take_wifi_password() {
+  std::string p;
+  p.swap(wifi_pass_);
+  return p;
 }

@@ -16,6 +16,12 @@ Read your entry. Sorry about the heading; this one is added above yours.
 
 ---
 
+## 2026-11-26, iMac session (Wi-Fi window, moving background)
+
+For your information, nothing on the wire: the waiting screen now has a Wi-Fi window (choose a network, type its password on the iMac's keyboard; via iwd over D-Bus) behind a small icon at the right end of the Thunderbolt / Wi-Fi switch, and a background with slowly drifting soft shadows. The iMac's keyboard and mouse are now read on their own thread (checked: keys, pointer and buttons still reach `fake_mac.py` in a session).
+
+---
+
 ## 2026-11-26, iMac session (Restart / Shut Down and a Thunderbolt / Wi-Fi switch on the waiting screen)
 
 Read "(drops: agreed; Restart in Linux)". Noted: `LINUXBOOT` label, `EFI/BOOT/BOOTX64.EFI` and `loader/loader.conf` stay as they are. (Your commit replaced the heading of my previous entry instead of adding above it; restored.)

@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <libevdev/libevdev.h>
 #include <linux/input.h>
+#include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/inotify.h>
 #include <unistd.h>
 
@@ -15,7 +17,21 @@
 
 static const char* kDir = "/dev/input";
 
-Input::Input(Emit emit, Local local) : emit_(std::move(emit)), local_(std::move(local)) {
+Input::Input(Emit emit, Local local) : out_emit_(std::move(emit)), out_local_(std::move(local)) {
+  out_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  wake_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  auto notify = [this] { uint64_t one = 1; (void)!write(out_efd_, &one, sizeof one); };
+  emit_ = [this, notify](uint8_t t, const void* p, size_t n) {
+    std::lock_guard<std::mutex> l(mu_);
+    queue_.push_back(Msg{false, t, std::vector<uint8_t>((const uint8_t*)p, (const uint8_t*)p + n), 0, 0, 0, 0});
+    notify();
+  };
+  local_ = [this, notify](int dx, int dy, uint16_t code, int value) {
+    std::lock_guard<std::mutex> l(mu_);
+    // Each report on its own (not summed): the pointer's acceleration depends on the size of each.
+    queue_.push_back(Msg{true, 0, {}, dx, dy, code, value});
+    notify();
+  };
   inotify_fd_ = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   inotify_add_watch(inotify_fd_, kDir, IN_CREATE | IN_ATTRIB | IN_DELETE);
   if (DIR* d = opendir(kDir)) {
@@ -23,17 +39,51 @@ Input::Input(Emit emit, Local local) : emit_(std::move(emit)), local_(std::move(
       if (!strncmp(e->d_name, "event", 5)) try_open(std::string(kDir) + "/" + e->d_name);
     closedir(d);
   }
+  thread_ = std::thread(&Input::loop, this);
 }
 
 Input::~Input() {
+  stop_ = true;
+  uint64_t one = 1;
+  (void)!write(wake_efd_, &one, sizeof one);
+  thread_.join();
   while (!devs_.empty()) close_dev(devs_.begin()->first);
   if (inotify_fd_ >= 0) close(inotify_fd_);
+  close(out_efd_);
+  close(wake_efd_);
 }
 
-std::vector<int> Input::fds() const {
-  std::vector<int> v;
-  for (auto& [fd, d] : devs_) v.push_back(fd);
-  return v;
+void Input::loop() {
+  while (!stop_) {
+    if (want_active_ != active_) apply_active(want_active_);
+    std::vector<pollfd> p{{inotify_fd_, POLLIN, 0}, {wake_efd_, POLLIN, 0}};
+    for (auto& [fd, d] : devs_) p.push_back({fd, POLLIN, 0});
+    if (poll(p.data(), p.size(), 500) <= 0) continue;
+    if (p[1].revents) { uint64_t n; (void)!read(wake_efd_, &n, sizeof n); }
+    if (p[0].revents) on_inotify();
+    for (size_t i = 2; i < p.size(); i++)
+      if (p[i].revents) on_readable(p[i].fd);
+  }
+}
+
+void Input::drain() {
+  uint64_t n;
+  (void)!read(out_efd_, &n, sizeof n);
+  std::vector<Msg> q;
+  {
+    std::lock_guard<std::mutex> l(mu_);
+    q.swap(queue_);
+  }
+  for (auto& m : q) {
+    if (m.local) { if (out_local_) out_local_(m.dx, m.dy, m.code, m.value); }
+    else if (out_emit_) out_emit_(m.type, m.payload.data(), m.payload.size());
+  }
+}
+
+void Input::set_active(bool on) {
+  want_active_ = on;
+  uint64_t one = 1;
+  (void)!write(wake_efd_, &one, sizeof one);
 }
 
 void Input::try_open(const std::string& path) {
@@ -98,7 +148,7 @@ void Input::on_inotify() {
   }
 }
 
-void Input::set_active(bool on) {
+void Input::apply_active(bool on) {
   if (on == active_) return;
   active_ = on;
   for (auto& [fd, d] : devs_) {

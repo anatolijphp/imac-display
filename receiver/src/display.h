@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "video.h"
 
@@ -43,15 +44,24 @@ class Display {
 
   // The iMac's own mouse and keyboard on the waiting screen (outside a session): a pointer, the
   // Restart / Shut Down buttons and their confirmation dialog. press() returns the confirmed action.
-  enum class Action { None, Restart, ShutDown, UseThunderbolt, UseWifi };
+  enum class Action { None, Restart, ShutDown, UseThunderbolt, UseWifi, WifiOpen, WifiJoin, WifiPassword };
   void pointer_motion(int dx, int dy);
   Action press(uint16_t code, int value);  // Linux key or button code, value 1 down / 0 up
   void idle_tick();                        // once a second: hides the pointer when unused, closes a stale dialog
   void show_busy(const std::string& text); // "Restarting…": replaces the dialog, buttons inactive
 
+  // Wi-Fi panel. The owner fills in the networks; WifiJoin means "join wifi_pick()", WifiPassword
+  // means "join wifi_pick() with take_wifi_password()".
+  struct WifiRow { std::string name; int bars = 0; bool secured = false, connected = false; };
+  void set_wifi(std::vector<WifiRow> rows, bool scanning, const std::string& status);
+  void ask_wifi_password(const std::string& name, const std::string& error);
+  bool wifi_open() const { return dialog_ == Dialog::Wifi || dialog_ == Dialog::WifiPassword; }
+  std::string wifi_pick() const { return wifi_pick_; }
+  std::string take_wifi_password();
+
  private:
-  enum class Hit { None, Restart, ShutDown, Cancel, Confirm, LinkTb, LinkWifi };
-  enum class Dialog { None, Restart, ShutDown, Busy };
+  enum class Hit { None, Restart, ShutDown, Cancel, Confirm, LinkTb, LinkWifi, WifiButton, Row, Done, ShowPass };
+  enum class Dialog { None, Restart, ShutDown, Busy, Wifi, WifiPassword };
   struct Rect {
     double x = 0, y = 0, w = 0, h = 0;
     bool in(double px, double py) const { return px >= x && px < x + w && py >= y && py < y + h; }
@@ -62,7 +72,13 @@ class Display {
   void update_hover();
   void cursor(bool on);
   bool make_cursor();
-  void copy_rect(int x, int y, int w, int h);  // base surface -> scanout buffer
+  // Background with slowly drifting soft shadows: a low-resolution field updated every frame, scaled up
+  // and dithered per pixel, with the content (base_) blended on top. frame() writes the whole screen.
+  void update_field(double t);
+  void compose(uint8_t* dst, int pitch);  // field + content, all rows (in parallel)
+  void compose_rows(uint8_t* dst, int pitch, int y0, int y1);
+  void content_spans();                   // per row: where base_ has anything (blending is skipped elsewhere)
+  void frame();                           // a new background frame on the panel, with the dots
 
   int fd_ = -1;
   uint32_t conn_id_ = 0, crtc_id_ = 0, fb_id_ = 0, handle_ = 0, pitch_ = 0;
@@ -71,8 +87,15 @@ class Display {
   int w_ = 0, h_ = 0;
   void* saved_crtc_ = nullptr;  // drmModeCrtc* to restore the console's mode on close
   int tty_ = -1;                // our VT, switched to graphics mode so the text console stays quiet
-  cairo_surface_t* base_ = nullptr;  // static picture in system memory
-  cairo_surface_t* bg_ = nullptr;    // the dithered background alone (slow to compute: done once)
+  cairo_surface_t* base_ = nullptr;  // everything but the background (ARGB, transparent elsewhere)
+  static constexpr int kCell = 16;   // background field: one value per 16 x 16 pixels
+  int fw_ = 0, fh_ = 0;
+  std::vector<int32_t> field_[3];    // per channel, 8.8 fixed point, (fw_ + 1) x (fh_ + 1)
+  std::vector<int16_t> noise_;       // dither tile, 128 x 128, -256..256 (= -1..1 step)
+  std::vector<std::pair<int, int>> spans_;  // per row [x0, x1) where base_ is not transparent
+  uint64_t start_us_ = 0;
+  std::vector<uint32_t> dots_bg_;    // the dots' rectangle as last composed (the dots are drawn on a copy)
+  bool force_frame_ = true;          // content changed: compose the whole screen at the next animate()
   bool has_status_ = false;
   Status status_;
   int dots_x_ = 0, dots_y_ = 0, dots_w_ = 0, dots_h_ = 0, dot_r_ = 0;
@@ -80,7 +103,13 @@ class Display {
   bool paused_ = false;
   void* mode_ = nullptr;  // drmModeModeInfo
 
-  Rect btn_restart_, btn_shutdown_, dlg_cancel_, dlg_confirm_, seg_tb_, seg_wifi_;
+  Rect btn_restart_, btn_shutdown_, btn_wifi_, dlg_cancel_, dlg_confirm_, seg_tb_, seg_wifi_, dlg_done_, show_pass_;
+  std::vector<Rect> row_rects_;
+  int hover_row_ = -1;
+  std::vector<WifiRow> wifi_rows_;
+  bool wifi_scanning_ = false;
+  std::string wifi_status_, wifi_pick_, wifi_pass_, wifi_pass_error_;
+  bool wifi_show_pass_ = false, shift_down_ = false, caps_ = false;
   Dialog dialog_ = Dialog::None;
   std::string busy_text_;
   uint64_t dialog_us_ = 0;

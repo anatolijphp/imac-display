@@ -62,6 +62,17 @@ mouse moves and goes away after 10 s without movement):
   product; Wi-Fi is for testing. Takes effect at once, is kept in `/var/lib/imacdisplayd/link` across
   restarts, and is ignored when `--iface` is given in `/etc/imacdisplayd.conf`. Over Wi-Fi the iMac's own
   macOS volume is never shared (USB drives are; Samba listens on the chosen link only).
+- **Wi-Fi window:** the small Wi-Fi icon at the right end of the switch (full when connected, struck
+  through when not) opens it. Networks in range, strongest first, with lock and signal; click one to
+  join. A secured network iwd does not know yet asks for its password (typed with the iMac's keyboard,
+  US layout; "Show password" to check it, Join from 8 characters). Talks to iwd over D-Bus
+  (`src/wifi.cpp`, an iwd agent answers its password question; the password is never logged).
+  Known networks join without asking; if the saved password fails, it asks again.
+- **Background:** a few very soft shadows drift over the glow (periods 53-113 s), composed at 3 frames
+  a second from a low-resolution field, scaled up and dithered (about 18 % of one CPU core while the
+  waiting screen is up; nothing while video runs). The dots still animate at 15 per second.
+- Input is read on a thread of its own: a redraw (20-40 ms at 4K) never makes the kernel drop pointer
+  motion or keys, here or in a session.
 - While a Mac is connected none of this is shown, and all input goes to the MacBook.
 - Testing: `--snapshots DIR` saves every redraw as a PNG.
 

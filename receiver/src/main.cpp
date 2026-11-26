@@ -30,6 +30,7 @@
 #include "input.h"
 #include "storage.h"
 #include "video.h"
+#include "wifi.h"
 #include "net.h"
 #include "protocol.h"
 
@@ -96,6 +97,7 @@ class Daemon {
     kf_timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     mic_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     storage_.set_iface(opt_.iface, is_wireless(opt_.iface));
+    if (opt_.display) wifi_ = std::make_unique<Wifi>(wifi_iface(), [this] { wifi_changed(); });
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
     timerfd_settime(anim_, 0, &ats, nullptr);
@@ -116,12 +118,12 @@ class Daemon {
       for (auto& c : pending_) add(c->fd(), POLLIN | (c->wants_write() ? POLLOUT : 0), 2);
       if (ctrl_) add(ctrl_->fd(), POLLIN | (ctrl_->wants_write() ? POLLOUT : 0), 3);
       if (video_) add(video_->fd(), POLLIN | (video_->wants_write() ? POLLOUT : 0), 4);
-      add(input_.inotify_fd(), POLLIN, 5);
+      add(input_.notify_fd(), POLLIN, 5);
       add(storage_.udev_fd(), POLLIN, 7);
       add(kf_efd_, POLLIN, 9);
       add(kf_timer_, POLLIN, 10);
       add(mic_efd_, POLLIN, 11);
-      for (int fd : input_.fds()) add(fd, POLLIN, 6);
+      if (wifi_ && wifi_->ok()) add(wifi_->fd(), wifi_->events(), 12);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
         if (errno == EINTR) continue;
@@ -137,8 +139,7 @@ class Daemon {
           case 2: service_pending(fd, pfds[i].revents); break;
           case 3: if (ctrl_ && ctrl_->fd() == fd) service_ctrl(pfds[i].revents); break;
           case 4: if (video_ && video_->fd() == fd) service_video(pfds[i].revents); break;
-          case 5: input_.on_inotify(); break;
-          case 6: input_.on_readable(fd); break;
+          case 5: input_.drain(); break;
           case 7: storage_.on_udev(); break;
           case 8: {
             uint64_t n;
@@ -150,6 +151,7 @@ class Daemon {
           case 9: { uint64_t n; (void)!read(kf_efd_, &n, sizeof n); send_keyframe_request(); break; }
           case 11: { uint64_t n; (void)!read(mic_efd_, &n, sizeof n); send_mic(); break; }
           case 10: { uint64_t n; (void)!read(kf_timer_, &n, sizeof n); if (kf_pending_) send_keyframe_request(); break; }
+          case 12: wifi_->process(); break;
         }
       }
     }
@@ -181,8 +183,45 @@ class Daemon {
       case Display::Action::ShutDown: power("poweroff", "Shutting down\u2026"); break;
       case Display::Action::UseThunderbolt: switch_link(false); break;
       case Display::Action::UseWifi: switch_link(true); break;
+      case Display::Action::WifiOpen:
+        if (wifi_) { wifi_->scan(); wifi_changed(); }
+        break;
+      case Display::Action::WifiJoin:
+        if (const WifiNet* n = wifi_net(display_.wifi_pick())) {
+          // A secured network iwd does not know yet: ask for the password first.
+          if (n->type == "psk" && !n->known) display_.ask_wifi_password(n->name, "");
+          else wifi_->connect(n->path, "");
+        }
+        break;
+      case Display::Action::WifiPassword:
+        if (const WifiNet* n = wifi_net(display_.wifi_pick())) wifi_->connect(n->path, display_.take_wifi_password());
+        break;
       case Display::Action::None: break;
     }
+  }
+
+  const WifiNet* wifi_net(const std::string& name) const {
+    if (!wifi_) return nullptr;
+    for (auto& n : wifi_->networks())
+      if (n.name == name) return &n;
+    return nullptr;
+  }
+
+  void wifi_changed() {
+    if (!wifi_) return;
+    std::vector<Display::WifiRow> rows;
+    for (auto& n : wifi_->networks())
+      rows.push_back({n.name, n.bars, n.type != "open", n.connected});
+    display_.set_wifi(rows, wifi_->scanning(), wifi_->status());
+    // iwd asked for a password we did not have (new network, or the saved one stopped working).
+    std::string need = wifi_->password_needed();
+    if (!need.empty() && display_.wifi_open())
+      for (auto& n : wifi_->networks())
+        if (n.path == need) {
+          bool known = n.known;
+          display_.ask_wifi_password(n.name, wifi_->status().empty() && known ? "The saved password did not work." : wifi_->status());
+          break;
+        }
   }
 
   // Restart (into macOS, the firmware's default) or shut down. Nothing about the boot order is changed.
@@ -538,6 +577,7 @@ class Daemon {
   void tick() {
     try_listen();
     display_.idle_tick();
+    if (wifi_) wifi_->process();
     video_took_screen();
     if (video_dec_ && !video_dec_->showing() && display_.paused() && restart_deadline_us_ &&
         now_us() > restart_deadline_us_) {
@@ -608,6 +648,7 @@ class Daemon {
   std::string mac_name_;
   Input input_;
   Storage storage_;
+  std::unique_ptr<Wifi> wifi_;
   int timer_ = -1;
   int listen_fd_ = -1;
   std::string listen_err_;

@@ -11,6 +11,7 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(EVDEV REQUIRED IMPORTED_TARGET libevdev)
 pkg_check_modules(UDEV REQUIRED IMPORTED_TARGET libudev)
+pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 pkg_check_modules(DRM REQUIRED IMPORTED_TARGET libdrm)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo)
 pkg_check_modules(GL REQUIRED IMPORTED_TARGET egl gbm glesv2)
@@ -28,7 +29,8 @@ add_executable(imacdisplayd
   src/display.cpp
   src/video.cpp
   src/audio.cpp
+  src/wifi.cpp
 )
-target_link_libraries(imacdisplayd PRIVATE PkgConfig::EVDEV PkgConfig::UDEV PkgConfig::DRM PkgConfig::CAIRO PkgConfig::GL PkgConfig::AV PkgConfig::ALSA Threads::Threads nlohmann_json::nlohmann_json)
+target_link_libraries(imacdisplayd PRIVATE PkgConfig::EVDEV PkgConfig::UDEV PkgConfig::SYSTEMD PkgConfig::DRM PkgConfig::CAIRO PkgConfig::GL PkgConfig::AV PkgConfig::ALSA Threads::Threads nlohmann_json::nlohmann_json)
 
 install(TARGETS imacdisplayd RUNTIME DESTINATION bin)
