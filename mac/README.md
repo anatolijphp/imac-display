@@ -4,14 +4,18 @@ The MacBook half of `PROTOCOL.md`. **The user installs exactly one thing: `iMac 
 
 ## The app
 
-    scripts/build-app.sh        # → out/iMac Display.app and out/iMac Display.dmg
+    scripts/make-signing-identity.sh   # once per Mac: keeps the app's permissions across rebuilds
+    scripts/build-app.sh               # → out/iMac Display.app and out/iMac Display.dmg
 
 A menu-bar icon, no windows. It:
 
 - looks for the iMac on the Thunderbolt link (`_imacdisplay._tcp`) and connects by itself; "Testing: connect over Wi-Fi" in its menu connects to `imac-display.local` instead;
 - adds the extra display, sends picture and sound, takes the iMac's keyboard, mouse and USB drives;
-- carries the "iMac Speakers" sound device inside (`Contents/Resources/iMacDisplayAudio.driver`) and installs, updates or removes it from its menu, with macOS's administrator password dialog;
-- asks for its permissions on first start and lists the missing ones in its menu;
+- **resolution is chosen in macOS's Display settings**, like for any monitor (2560×1440 down to 1280×720, Retina and not). The stream follows the choice while connected; the app has no resolution setting of its own. The bit rate follows the picture size (about 10 Mbit/s at 1920×1080, 40 at 3840×2160; at most 20 over Wi-Fi);
+- carries the "iMac Speakers" sound device inside (`Contents/Resources/iMacDisplayAudio.driver`) and installs or updates it itself, with macOS's administrator password dialog;
+- its menu has two switches, **Use Display** and **Use Sound**; either works without the other, and with both off the app does nothing;
+- **"iMac Speakers" exists only while the iMac is connected and Use Sound is on.** On connecting, the Mac's sound output moves to it; on disconnecting, it moves back and the device disappears;
+- **checks its permissions at every start** (Screen Recording, Accessibility, and Microphone once the sound device is installed) and asks for any that is missing; there are no permission entries in the menu;
 - writes `~/Library/Logs/iMac Display.log`.
 
 Not verified yet: finding the iMac over Thunderbolt (no cable connected so far, and the receiver does not advertise the service yet).
@@ -46,7 +50,9 @@ The driver adds an output device called **iMac Speakers**. Pick it in the sound 
 
 Without the driver, `imd pipeline` falls back to copying everything the Mac plays (`--audio-source screen`), with no way to choose.
 
-Known limits: the device is in the list even when no iMac is connected (sound sent to it then goes nowhere), and there is no "iMac Microphone" device yet.
+How the switch is done, and why: a process that records from the tap cannot make "iMac Speakers" the default output itself (macOS 27.2 answers "no error" and does nothing), and macOS needs about a second after the device appears. So the app starts a second copy of itself for a moment (`--set-default-output`, `--print-default-output`), retries until a fresh look confirms the switch, and does the same to switch back.
+
+Known limit: there is no "iMac Microphone" device yet.
 
 Testing against the real iMac over Wi-Fi (testing only, the product uses the Thunderbolt cable): start the receiver there with `--iface wlan0`, then
 
