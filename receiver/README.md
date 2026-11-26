@@ -42,6 +42,11 @@ Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):
   the receiver runs (`getty@tty1.service.d/receiver.conf`), so typing on the iMac never reaches a hidden shell.
 - **Way back in:** SSH always works. In the boot menu (hidden: hold Space while the iMac starts), **"console only (receiver off)"**
   (`imacdisplay.noreceiver`) or **"safe graphics"** (`nomodeset`) start the old auto-login console instead.
+- **Wi-Fi watchdog** (`imac-wifi-watchdog.service`, script `/usr/local/lib/imac-display/wifi-watchdog`): on this
+  iMac's card (BCM43602, `brcmfmac`) about every third start ended "connected, address received, no traffic at
+  all" until the network was joined again by hand. The watchdog asks the router for its hardware address every
+  few seconds and, when it gets no answer while iwd says "connected", joins the same network again (about 8 s
+  from the fault to working). Cause of the fault unknown; `journalctl -u imac-wifi-watchdog` shows each case.
 - The screen waits for the real GPU driver (`amdgpu`) and ignores the firmware framebuffer (`simpledrm`)
   that exists for the first seconds of boot.
 

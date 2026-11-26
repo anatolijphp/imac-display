@@ -228,6 +228,8 @@ if [ -x "$T/usr/local/bin/imacdisplayd" ] && [ -d "$OVERLAY" ]; then
   rsync -a --exclude='/boot/' "$OVERLAY"/ "$T"/
   systemd-sysusers --root="$T" >/dev/null 2>&1 || say "WARNING: the drive-sharing user was not created (systemd-sysusers)"
   systemctl --root="$T" enable imacdisplayd.service >/dev/null
+  # Joins Wi-Fi again when it is connected but passes no traffic (seen often on this iMac's card).
+  [ -f "$T/etc/systemd/system/imac-wifi-watchdog.service" ] && systemctl --root="$T" enable imac-wifi-watchdog.service >/dev/null
   RECEIVER=1
   say "receiver installed: the iMac will start straight into \"Waiting for your Mac\""
 else

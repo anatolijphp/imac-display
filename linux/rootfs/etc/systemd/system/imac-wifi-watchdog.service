@@ -1,0 +1,12 @@
+[Unit]
+Description=iMac Display: join Wi-Fi again when it is connected but passes no traffic
+Documentation=file:///usr/local/lib/imac-display/wifi-watchdog
+After=iwd.service systemd-networkd.service
+
+[Service]
+ExecStart=/usr/local/lib/imac-display/wifi-watchdog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

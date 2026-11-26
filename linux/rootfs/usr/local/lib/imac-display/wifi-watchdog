@@ -1,0 +1,72 @@
+#!/bin/bash
+# Rejoins Wi-Fi when it is connected but passes no traffic.
+#
+# Seen on this iMac (BCM43602, brcmfmac) in 3 of 7 starts on 2026-11-26: iwd is "connected", the
+# DHCP lease arrives, and after that nothing gets through in either direction (DNS to the router
+# times out, no SSH, the MacBook cannot find the iMac). Joining the same network again cures it at
+# once. Switching Wi-Fi power saving off (iwd main.conf) did not prevent it; the cause is not known.
+#
+# So: every few seconds ask the router for its hardware address (ARP; every router answers that).
+# No answer several times in a row while iwd says "connected" = the state above: disconnect, connect
+# to the same network again, ask systemd-networkd for a fresh address. What it sees and does goes to
+# the journal:  journalctl -u imac-wifi-watchdog
+#
+# WATCHDOG_TEST=1: treat the first two checks as failed, to try out the rejoin.
+
+PATH=/usr/bin:/usr/local/bin
+IF=wlan0
+IWD=net.connman.iwd
+
+station() {  # the iwd object of the Wi-Fi card
+  local p
+  for p in $(busctl tree --list $IWD 2>/dev/null); do
+    busctl get-property $IWD "$p" $IWD.Station State >/dev/null 2>&1 && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+alive() {  # does the router answer?
+  if [ -n "${WATCHDOG_TEST:-}" ] && [ "$tested" -lt 2 ]; then tested=$((tested + 1)); return 1; fi
+  arping -q -c 2 -w 2 -I "$IF" "$1" >/dev/null 2>&1 || ping -q -c 1 -W 1 -I "$IF" "$1" >/dev/null 2>&1
+}
+
+tested=0
+fails=0
+rejoins=0
+pause=3
+while sleep "$pause"; do
+  pause=3
+  gw="$(ip -4 route show default dev "$IF" 2>/dev/null | awk '{ print $3; exit }')"
+  if [ -z "$gw" ]; then fails=0; continue; fi          # no address yet, or Wi-Fi not in use
+  if alive "$gw"; then
+    [ "$rejoins" -gt 0 ] && echo "Wi-Fi passes traffic again (router $gw answers)"
+    fails=0; rejoins=0; pause=10
+    continue
+  fi
+  fails=$((fails + 1))
+  [ "$fails" -ge 2 ] || continue
+  fails=0
+
+  dev="$(station)" || continue
+  [ "$(busctl get-property $IWD "$dev" $IWD.Station State 2>/dev/null)" = 's "connected"' ] || continue
+  net="$(busctl get-property $IWD "$dev" $IWD.Station ConnectedNetwork 2>/dev/null | sed -n 's/^o "\(.*\)"$/\1/p')"
+  [ -n "$net" ] || continue
+  name="$(busctl get-property $IWD "$net" $IWD.Network Name 2>/dev/null | sed -n 's/^s "\(.*\)"$/\1/p')"
+
+  echo "Wi-Fi is connected to \"$name\" but the router $gw does not answer: joining it again"
+  iw dev "$IF" link 2>&1 | sed 's/^/  link: /'
+  iw dev "$IF" station dump 2>&1 | grep -E 'rx (bytes|packets)|tx (bytes|packets|failed)|signal:' | sed 's/^/  station: /'
+  ip neigh show dev "$IF" 2>&1 | sed 's/^/  neighbour: /'
+
+  busctl call $IWD "$dev" $IWD.Station Disconnect >/dev/null 2>&1
+  sleep 1
+  if busctl --timeout=25 call $IWD "$net" $IWD.Network Connect >/dev/null 2>&1; then
+    networkctl reconfigure "$IF" >/dev/null 2>&1
+    echo "joined \"$name\" again"
+  else
+    echo "could not join \"$name\" again"
+  fi
+  rejoins=$((rejoins + 1))
+  # Give the new connection time; if it keeps failing, slow down instead of flapping.
+  if [ "$rejoins" -ge 3 ]; then pause=60; else pause=10; fi
+done
