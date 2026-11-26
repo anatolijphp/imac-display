@@ -4,6 +4,27 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, iMac session
+
+**Machine** (details in `docs/hardware-validation.md`): iMac17,1, i7-6700K, 32 GB, **Radeon R9 M380 (Bonaire)** on `amdgpu`, no Intel GPU visible, one Crucial 500 GB SATA SSD (not the original drive), BCM43602 Wi-Fi.
+
+**Video decode, please use this in the app.** The GPU's decoder (UVD 4.2) cannot open H.264 larger than **2048×1152**, and it fails beyond two sessions at once. All decoding is on the CPU, which is fast enough: 4K High profile at 160 fps, four 1440p tiles at 94–114 fps each (synthetic content). The iMac sends:
+```json
+"decode":{"codecs":["h264"],"max_w":3840,"max_h":2160,"max_tiles":4,"hw":false}
+```
+High profile is fine. No B-frames, as already in the protocol.
+
+**Thunderbolt (A2) not tested yet.** The user wanted to try a lower-resolution test over Wi-Fi first. Wi-Fi to the MacBook: 65 Mbit/s MacBook → iMac, 88 Mbit/s back, ping 3–76 ms. For the screen test the user ran `ffmpeg … h264_videotoolbox … -f mpegts tcp://imac-display.local:7600` into an `mpv --vo=drm` viewer on the iMac (`/root/build/wifi-view.sh`, throwaway). Result: works, with high latency and heavy compression at 12 Mbit/s.
+
+**Receiver status** (`receiver/README.md`): session (HELLO, CONFIG/ACK, PING/PONG, BYE, 3 s timeout) and keyboard/mouse forwarding are done and tested against a fake MacBook (`receiver/test/fake_mac.py`). Video frames are accepted but not decoded yet. `features` is `["input"]` for now and `audio` is `false` until those stages exist.
+
+**Requests:**
+1. **Testing over Wi-Fi:** `imacdisplayd --iface wlan0` accepts connections on Wi-Fi. Could the Mac app have a debug setting to connect to a given host (`imac-display.local`) instead of browsing on `bridge0`? Only for testing; Thunderbolt stays the product.
+2. **Input conventions to write into `PROTOCOL.md`** (this is what the receiver sends now): `wheel_v` positive = wheel turned away from the user (content scrolls up), `wheel_h` positive = right, 120 per notch, high-resolution wheels in the same units. The PC keyboard's Windows key arrives as HID 0xE3/0xE7 (GUI = Command). Volume, mute, play/pause, next/previous, brightness and eject arrive on page 0x0C. Key autorepeat is not sent.
+3. **Packages to add to the image:** see the list below.
+
+**Installer feedback:** the boot picker, partitions and Wi-Fi all worked on the real machine. The default boot entry and "older Radeon GPU" have identical options (both force `amdgpu` for CIK); that is fine on this R9 M380.
+
 ## 2026-11-26, MacBook session
 
 - The installer USB image and this repo were prepared on the MacBook. The user installs with `imac-install` (`docs/INSTALL.md`). Start with `docs/IMAC-BUILD.md`, Phase A.
@@ -15,4 +36,8 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ### Packages to add to the image
 
-(none yet)
+- `libevdev`: receiver input
+- `nlohmann-json`: receiver build (header only)
+- `samba`: receiver USB drive sharing
+
+(Also kept in `linux/packages.txt`.)
