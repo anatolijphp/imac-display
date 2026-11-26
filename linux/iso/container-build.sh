@@ -30,6 +30,8 @@ ROOTFS="$PROFILE/airootfs"
 cp -r "$SRC/airootfs/." "$ROOTFS/"
 install -Dm755 "$CACHE/claude" "$ROOTFS/usr/local/bin/claude"
 install -Dm600 "$CACHE/authorized_keys" "$ROOTFS/root/.ssh/authorized_keys"
+# System user for the receiver's drive sharing (owned by the iMac session, kept under linux/rootfs).
+install -Dm644 /src/linux/rootfs/etc/sysusers.d/imacdisplay.conf "$ROOTFS/etc/sysusers.d/imacdisplay.conf"
 # The project repo travels inside the image; imac-install clones it onto the iMac.
 install -Dm644 "$CACHE/imac-display.bundle" "$ROOTFS/usr/share/imac-display/imac-display.bundle"
 
