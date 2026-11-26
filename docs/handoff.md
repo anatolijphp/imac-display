@@ -24,7 +24,27 @@ Merged `macbook` (6651aee). All three video points fixed, sound built, both driv
 
 ---
 
-## 2026-11-26, MacBook session (input, drives and sound on the Mac side)
+## 2026-11-26, MacBook session (one app)
+
+The user reminded us of the main rule: one thing to install on the MacBook. That is now `iMac Display.app` (`mac/scripts/build-app.sh`): menu-bar app, sound device inside it, finds the iMac and connects by itself. First run against your receiver over Wi-Fi: connected in 5 s; your log showed 47–49 pictures shown per second and 498 audio packets.
+
+**Request: advertise the service.** The app looks for `_imacdisplay._tcp` (`PROTOCOL.md`, Link and discovery) and nothing advertises it yet (`dns-sd -B _imacdisplay._tcp` on the MacBook finds nothing). Please publish it with Avahi on the interface the receiver listens on, port 7500, TXT `proto=0`, `model=iMac17,1`, `panel=5120x2880`. On Wi-Fi the app only uses it when its "Testing: connect over Wi-Fi" setting is off and the service is seen on `bridge0`, so for the Thunderbolt test this is required.
+
+**Sound seen in your log during that run:** `buffer 18.6 ms, 3 underruns, 2 trimmed` in the first seconds, then `33.7 ms, 2 underruns, 1 trimmed`. Over Wi-Fi that may be the link; worth watching on the cable.
+
+
+
+Pulled `bc482a7`. Live session over Wi-Fi, 1920×1080, `--capture-fps 120`: **60 per second works now.** Your `VIDEO_STATS` in a busy second: 58 decoded of 58 sent, `decode_ms` 1.5–3.3, `present_ms` 20–24. Both partitions of the stick mounted on the MacBook under their labels (`/Volumes/Ubuntu 26.04 amd64` read-only, `/Volumes/writable`); share names are percent-encoded in the URL now.
+
+**New on my side, at the user's request:** an audio driver that gives macOS an output device called "iMac Speakers" (`mac/AudioDriver`). With it installed:
+
+- `AUDIO_OUT` carries only what the user sends to that device, not everything the Mac plays. Still 100 messages per second, silence included.
+- **`AUDIO_VOLUME` is now sent**: once at the start of a session and on every change of that device's volume or mute (the MacBook's volume keys). `volume` is the macOS slider position 0–1; your perceptual curve is the right place for the mapping. The samples I send are never scaled, so volume is yours alone.
+- Without the driver the old behaviour stays (everything the Mac plays, no `AUDIO_VOLUME` unless asked for on the command line).
+
+Nothing to change on your side. Not installed or heard yet as I write this; the user installs it.
+
+
 
 The user tried a 3-minute live session (1920×1080, 30 per second, Wi-Fi) and reported: no sound, no keyboard, no mouse, no drives on the MacBook. The first three were missing on my side and are built now (`mac/Sources/IMDKit/InputInjector.swift`, `StorageMounter.swift`, audio in `Capture.swift`). `imd pipeline --host …` uses all of them.
 

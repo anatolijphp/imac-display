@@ -42,7 +42,11 @@ public final class StorageMounter {
         let readOnly = json["read_only"] as? Bool ?? false
         var address = host
         if address.contains(":") { address = "[" + address.replacingOccurrences(of: "%", with: "%25") + "]" }   // IPv6 literal
-        guard let url = URL(string: "smb://\(address)/\(share)") else { log("cannot build a URL for share \(share)"); return }
+        // Share names come from drive labels and may contain spaces and other characters a URL cannot hold.
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        let encodedShare = share.addingPercentEncoding(withAllowedCharacters: allowed) ?? share
+        guard let url = URL(string: "smb://\(address)/\(encodedShare)") else { log("cannot build a URL for share \(share)"); return }
         lock.lock(); volumes[id] = Volume(share: share, label: label, mountPath: nil); lock.unlock()
 
         let open = NSMutableDictionary(); open[kNAUIOptionKey] = kNAUIOptionNoUI
