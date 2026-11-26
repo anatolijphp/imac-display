@@ -6,7 +6,9 @@
 #                                                       make-signing-identity.sh if there is one, else ad hoc
 #   SIGN_IDENTITY="My Cert" mac/scripts/build-app.sh    sign with a certificate from the login keychain
 #
-# Result: out/iMac Display.app and out/iMac Display.dmg (the app plus a shortcut to Applications).
+# Result: out/build.noindex/iMac Display.app and out/iMac Display.dmg (the app plus a shortcut to
+# Applications). The folder name ends in .noindex so that Spotlight and Launchpad do not show this
+# build next to the installed copy in /Applications.
 #
 # With an ad-hoc signature macOS ties its permissions (Screen Recording, Accessibility, Microphone)
 # to this exact build and asks again after every rebuild. A certificate keeps them:
@@ -23,7 +25,8 @@ if [ -z "${SIGN_IDENTITY:-}" ] && [ -f "$LOCAL_KEYCHAIN" ]; then
 fi
 scripts/build-audio-driver.sh
 swift build -c release
-APP="../out/iMac Display.app"
+mkdir -p ../out/build.noindex
+APP="../out/build.noindex/iMac Display.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/iMacDisplayApp "$APP/Contents/MacOS/iMacDisplay"
@@ -62,5 +65,5 @@ ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
 hdiutil create -quiet -volname "iMac Display" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
-echo "built: $(cd ../out && pwd)/iMac Display.app"
+echo "built: $(cd ../out && pwd)/build.noindex/iMac Display.app"
 echo "       $(cd ../out && pwd)/iMac Display.dmg"

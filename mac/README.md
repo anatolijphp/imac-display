@@ -5,7 +5,7 @@ The MacBook half of `PROTOCOL.md`. **The user installs exactly one thing: `iMac 
 ## The app
 
     scripts/make-signing-identity.sh   # once per Mac: keeps the app's permissions across rebuilds
-    scripts/build-app.sh               # → out/iMac Display.app and out/iMac Display.dmg
+    scripts/build-app.sh               # → out/build.noindex/iMac Display.app and out/iMac Display.dmg
 
 A menu-bar icon, no windows. It:
 
