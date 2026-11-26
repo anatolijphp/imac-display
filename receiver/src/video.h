@@ -58,9 +58,11 @@ class Video {
   struct Tile;
   struct TileMeta { int w = 0, h = 0, colorspace = 0, range = 0, format = 0; };
   struct Picture {
-    uint64_t pts = 0, last_recv_us = 0, complete_us = 0;
+    uint64_t pts = 0, last_recv_us = 0, complete_us = 0, first_seen_us = 0;
     int slot = -1;  // -1: no free slot, the picture is dropped
-    int have = 0, writers = 0;
+    uint32_t sent = 0, have = 0;  // tile masks: packets received for this picture, tiles decoded and copied
+    bool last_seen = false;       // the packet flagged "last tile sent for this picture" has arrived
+    int writers = 0;
     bool abandoned = false;
     std::vector<TileMeta> meta;
   };
@@ -72,6 +74,7 @@ class Video {
   void on_decoded(int index, uint64_t pts, uint64_t recv_us, const AVFrame* f, double ms);
   void present_loop();
   int take_slot();                   // pic_mu_ held
+  void forget_old(uint64_t now);     // pic_mu_ held: pictures that will never complete
   void release(Picture& p);          // pic_mu_ held
   size_t tile_bytes(int i) const;
 
@@ -92,6 +95,7 @@ class Video {
   std::vector<uint8_t> headless_buf_;       // decode-only mode: copies go here
 
   std::atomic<bool> stop_{false};
+  std::atomic<uint64_t> last_key_request_us_{0};
   std::atomic<bool> shown_any_{false};
   std::thread presenter_;
 

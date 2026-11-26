@@ -25,7 +25,12 @@ extern "C" {
 
 namespace {
 
-constexpr size_t kMaxQueue = 4;  // packets waiting per tile before we give up and ask for a keyframe
+// A decoder that is this far behind (age of the oldest waiting packet) cannot catch up: its backlog is
+// dropped and a keyframe requested. Generous on purpose: a keyframe is large and takes several frame
+// times to decode, and the small frames after it are caught up quickly.
+constexpr uint64_t kMaxBacklogUs = 500000;
+constexpr uint64_t kRepeatKeyRequestUs = 1000000;  // while a decoder waits for a keyframe, ask again this often
+constexpr uint64_t kForgetUs = 1000000;            // incomplete pictures older than this are given up
 constexpr int kSlots = 5;        // pictures in flight: shown/flipping, ready, up to 3 being decoded
 
 double ms_since(uint64_t t0) { return (now_us() - t0) / 1000.0; }
@@ -176,24 +181,57 @@ void Video::push(uint16_t tile, uint8_t flags, uint64_t pts_us, const uint8_t* d
   auto it = tile_index_.find(tile);
   if (it == tile_index_.end()) return;
   Tile* t = tiles_[it->second].get();
-  bool overflow = false;
+  uint64_t now = now_us();
+  {
+    // Which tiles make up this picture: tiles left out keep their last picture (PROTOCOL.md, Video).
+    std::lock_guard<std::mutex> l(pic_mu_);
+    forget_old(now);
+    Picture& p = assembling_[pts_us];
+    if (p.meta.empty()) { p.meta.resize(tiles_.size()); p.pts = pts_us; p.first_seen_us = now; }
+    p.sent |= 1u << it->second;
+    if (flags & 2) p.last_seen = true;
+  }
+  bool overflow = false, ask = false;
   {
     std::lock_guard<std::mutex> l(t->mu);
-    if (t->queue.size() >= kMaxQueue && !(flags & 1)) {
-      // The decoder cannot keep up. Throw the backlog away and restart at the next keyframe.
-      overflow = true;
+    if (flags & 1) {
+      t->queue.clear();  // a keyframe makes everything queued before it pointless
+      t->waiting_for_key = false;  // packets after it are decodable (set here, not when the decoder gets to it)
+    } else if (!t->queue.empty() && now - t->queue.front().recv_us > kMaxBacklogUs) {
+      overflow = true;  // hopelessly behind: drop the backlog, restart at the next keyframe
       t->queue.clear();
       t->waiting_for_key = true;
+    }
+    if (t->waiting_for_key && !(flags & 1)) {
+      // This packet cannot be decoded without its keyframe. Keep asking until one comes.
+      ask = now - last_key_request_us_ > kRepeatKeyRequestUs;
     } else {
-      if (flags & 1) t->queue.clear();  // a keyframe makes everything queued before it pointless
-      t->queue.push_back(Packet{std::vector<uint8_t>(data, data + len), flags, pts_us, now_us()});
+      t->queue.push_back(Packet{std::vector<uint8_t>(data, data + len), flags, pts_us, now});
     }
   }
   t->cv.notify_one();
   if (overflow) {
     std::lock_guard<std::mutex> l(stats_mu_);
     stats_.dropped++;
+    fprintf(stderr, "video: tile %d more than %llu ms behind, dropping its backlog\n", t->cfg.id,
+            (unsigned long long)(kMaxBacklogUs / 1000));
+  }
+  if (overflow || ask) {
+    last_key_request_us_ = now;
     request_keyframe_();
+  }
+}
+
+void Video::forget_old(uint64_t now) {
+  for (auto it = assembling_.begin(); it != assembling_.end();) {
+    Picture& p = it->second;
+    bool old = now - p.first_seen_us > kForgetUs;
+    if ((p.abandoned || old) && p.writers == 0) {
+      release(p);
+      it = assembling_.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
@@ -263,6 +301,7 @@ void Video::decode_loop(Tile* t) {
         std::lock_guard<std::mutex> l(t->mu);
         t->waiting_for_key = true;
       }
+      last_key_request_us_ = now_us();
       request_keyframe_();
     }
   }
@@ -286,22 +325,19 @@ void Video::on_decoded(int index, uint64_t pts, uint64_t recv_us, const AVFrame*
     return;
   }
 
-  // Find this picture's slot (taking a free one for a new picture), then copy outside the lock.
+  // Find this picture's slot (taking a free one when its first tile arrives), then copy outside the lock.
+  // Never wait here: a decoder that waits loses packets, and lost packets cost a keyframe. If the picture
+  // cannot be kept (GPU not set up yet, no slot), only this picture is lost; the decoder stays in step.
   uint8_t* dst = nullptr;
   {
-    std::unique_lock<std::mutex> l(pic_mu_);
-    pic_cv_.wait(l, [&] { return stop_ || gpu_ready_ || gpu_failed_; });
-    if (stop_ || gpu_failed_) return;
-    for (auto it = assembling_.begin(); it != assembling_.end();)  // forget abandoned, finished pictures
-      if (it->second.abandoned && it->second.writers == 0 && it->second.slot < 0) it = assembling_.erase(it);
-      else ++it;
-    Picture& p = assembling_[pts];
-    if (p.meta.empty()) {
-      p.meta.resize(tiles_.size());
-      p.pts = pts;
-      p.slot = take_slot();
-    }
-    if (p.slot < 0 || p.abandoned) return;
+    std::lock_guard<std::mutex> l(pic_mu_);
+    if (stop_ || !gpu_ready_ || gpu_failed_) return;
+    auto it = assembling_.find(pts);
+    if (it == assembling_.end()) return;  // given up already
+    Picture& p = it->second;
+    if (p.abandoned) return;
+    if (p.slot < 0) p.slot = take_slot();
+    if (p.slot < 0) return;
     p.writers++;
     dst = slots_[p.slot].ptr[index];
   }
@@ -326,20 +362,31 @@ void Video::on_decoded(int index, uint64_t pts, uint64_t recv_us, const AVFrame*
     return;
   }
   p.meta[index] = TileMeta{w, h, f->colorspace, f->color_range, f->format};
-  p.have++;
+  p.have |= 1u << index;
   if (recv_us > p.last_recv_us) p.last_recv_us = recv_us;
-  if (p.have < int(tiles_.size())) return;
+  // Complete when the last tile sent for it has arrived and every tile that was sent is decoded.
+  if (!p.last_seen || p.have != p.sent || p.writers > 0) return;
 
-  // Complete. Older incomplete pictures will never complete now: drop them.
+  // Older incomplete pictures will never complete now: drop them.
   Picture done = std::move(p);
   assembling_.erase(it);
   for (auto o = assembling_.begin(); o != assembling_.end() && o->first < pts;) {
-    { std::lock_guard<std::mutex> s(stats_mu_); stats_.dropped++; }
+    if (o->second.have) { std::lock_guard<std::mutex> s(stats_mu_); stats_.dropped++; }
     if (o->second.writers > 0) { o->second.abandoned = true; ++o; continue; }
     release(o->second);
     o = assembling_.erase(o);
   }
-  if (has_ready_) {  // the previous picture was never shown: replaced by this newer one
+  if (has_ready_) {
+    // Not shown yet and now replaced. Its tiles are merged into the new picture where the new one
+    // left them out, so no tile update is lost.
+    for (size_t i = 0; i < tiles_.size(); i++) {
+      uint32_t bit = 1u << i;
+      if ((ready_.have & bit) && !(done.have & bit) && done.slot >= 0 && ready_.slot >= 0) {
+        memcpy(slots_[done.slot].ptr[i], slots_[ready_.slot].ptr[i], tile_bytes(int(i)));
+        done.meta[i] = ready_.meta[i];
+        done.have |= bit;
+      }
+    }
     release(ready_);
     std::lock_guard<std::mutex> s(stats_mu_);
     stats_.dropped++;
@@ -517,6 +564,8 @@ void Video::present_loop() {
   glEnableVertexAttribArray(0);
   glEnableVertexAttribArray(1);
 
+  std::vector<TileMeta> tile_meta(nt);
+  std::vector<bool> tile_valid(nt, false);
   gbm_bo* shown_bo = nullptr;
   bool crtc_set = false;
   bool flip_pending = false;
@@ -536,11 +585,10 @@ void Video::present_loop() {
     }
     uint64_t t_start = now_us();
 
-    // GPU transfer from the pixel buffers into the textures (no CPU copy here), then draw.
-    glViewport(0, 0, screen_.w, screen_.h);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // GPU transfer from the pixel buffers into the textures (no CPU copy here). Only tiles that came with
+    // this picture are uploaded; the others keep their last picture.
     for (size_t i = 0; i < nt; i++) {
+      if (!(pic.have & (1u << i))) continue;
       const TileMeta& m = pic.meta[i];
       int w = m.w, h = m.h, cw = (w + 1) / 2, ch = (h + 1) / 2;
       glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo[pic.slot * nt + i]);
@@ -550,6 +598,21 @@ void Video::present_loop() {
         glBindTexture(GL_TEXTURE_2D, tex[i * 3 + p]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p ? cw : w, p ? ch : h, GL_RED, GL_UNSIGNED_BYTE, (void*)offs[p]);
       }
+      tile_meta[i] = m;
+      tile_valid[i] = true;
+    }
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    glViewport(0, 0, screen_.w, screen_.h);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    for (size_t i = 0; i < nt; i++) {
+      if (!tile_valid[i]) continue;  // never received: stays black
+      for (int p = 0; p < 3; p++) {
+        glActiveTexture(GL_TEXTURE0 + p);
+        glBindTexture(GL_TEXTURE_2D, tex[i * 3 + p]);
+      }
+      const TileMeta& m = tile_meta[i];
       float mat[9], off[3];
       yuv_matrix(m.colorspace, m.range, m.format, m.h, mat, off);
       glUniformMatrix3fv(u_m, 1, GL_FALSE, mat);
@@ -558,7 +621,6 @@ void Video::present_loop() {
       glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (void*)(i * 64 + 8));
       glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     uint64_t t_drawn = now_us();
 
     eglSwapBuffers(dpy, surf);

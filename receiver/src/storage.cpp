@@ -475,7 +475,15 @@ void Storage::start_samba() {
   std::vector<char*> av;
   for (auto& a : argv) av.push_back(const_cast<char*>(a.c_str()));
   av.push_back(nullptr);
-  if (posix_spawnp(&smbd_, "smbd", nullptr, nullptr, av.data(), environ) != 0) {
+  // Own process group: when smbd shuts down it signals its whole process group, which would otherwise
+  // include the receiver (and end it with every session).
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+  posix_spawnattr_setpgroup(&attr, 0);
+  int rc = posix_spawnp(&smbd_, "smbd", nullptr, &attr, av.data(), environ);
+  posix_spawnattr_destroy(&attr);
+  if (rc != 0) {
     fprintf(stderr, "storage: cannot start smbd\n");
     smbd_ = -1;
     return;

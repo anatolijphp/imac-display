@@ -64,6 +64,7 @@ class Daemon {
     itimerspec its{{1, 0}, {1, 0}};
     timerfd_settime(timer_, 0, &its, nullptr);
     kf_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    kf_timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
     timerfd_settime(anim_, 0, &ats, nullptr);
@@ -86,6 +87,7 @@ class Daemon {
       add(input_.inotify_fd(), POLLIN, 5);
       add(storage_.udev_fd(), POLLIN, 7);
       add(kf_efd_, POLLIN, 9);
+      add(kf_timer_, POLLIN, 10);
       for (int fd : input_.fds()) add(fd, POLLIN, 6);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
@@ -107,6 +109,7 @@ class Daemon {
           case 7: storage_.on_udev(); break;
           case 8: { uint64_t n; (void)!read(anim_, &n, sizeof n); display_.animate(); break; }
           case 9: { uint64_t n; (void)!read(kf_efd_, &n, sizeof n); send_keyframe_request(); break; }
+          case 10: { uint64_t n; (void)!read(kf_timer_, &n, sizeof n); if (kf_pending_) send_keyframe_request(); break; }
         }
       }
     }
@@ -184,6 +187,7 @@ class Daemon {
       ctrl_->send_json(proto::HELLO, imac_hello().dump());
       input_.set_active(true);
       storage_.session_started();
+      cpu_performance(true);
       update_screen();
       service_ctrl(0, /*buffered_only=*/true);
     } else if (channel == "video" && ctrl_ && session == session_) {
@@ -286,12 +290,49 @@ class Daemon {
     update_screen();
   }
 
+  // At most one request per 250 ms. A request that comes too soon is not dropped: it is sent as soon as
+  // the 250 ms are over (a decoder waiting for a keyframe shows nothing until one arrives).
   void send_keyframe_request() {
-    uint64_t now = now_us();
-    if (!ctrl_ || now - last_kf_request_us_ < 250000) return;  // at most 4 per second
+    uint64_t now = now_us(), gap = 250000;
+    if (!ctrl_) { kf_pending_ = false; return; }
+    if (now - last_kf_request_us_ < gap) {
+      if (!kf_pending_) {
+        kf_pending_ = true;
+        uint64_t wait = gap - (now - last_kf_request_us_);
+        itimerspec its{{0, 0}, {time_t(wait / 1000000), long(wait % 1000000) * 1000}};
+        timerfd_settime(kf_timer_, 0, &its, nullptr);
+      }
+      return;
+    }
+    kf_pending_ = false;
     last_kf_request_us_ = now;
     ctrl_->send(proto::VIDEO_REQUEST_KEYFRAME, nullptr, 0);
     fprintf(stderr, "video: asked the MacBook for a keyframe\n");
+  }
+
+  // While a session runs, ask the CPU for speed over power saving (intel_pstate energy preference).
+  // Decoding comes in short bursts; with the default preference the clock stays low and a 1080p frame
+  // takes 12 ms instead of 4 (measured, docs/hardware-validation.md). Restored at the waiting screen.
+  void cpu_performance(bool on) {
+    if (on == cpu_perf_on_) return;
+    cpu_perf_on_ = on;
+    for (int cpu = 0;; cpu++) {
+      char path[96];
+      snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/energy_performance_preference", cpu);
+      FILE* f = fopen(path, on ? "r+" : "w");
+      if (!f) break;
+      if (on) {
+        char old[64] = "";
+        if (fgets(old, sizeof old, f)) old[strcspn(old, "\n")] = 0;
+        if (cpu == 0) saved_epp_ = old;
+        rewind(f);
+        fputs("performance", f);
+      } else {
+        fputs(saved_epp_.empty() ? "balance_performance" : saved_epp_.c_str(), f);
+      }
+      fclose(f);
+    }
+    fprintf(stderr, "cpu: energy preference %s\n", on ? "performance (session)" : saved_epp_.c_str());
   }
 
   // Waiting screen: cable state, session state, and the link's addresses in the footer.
@@ -381,6 +422,8 @@ class Daemon {
     session_.clear();
     input_.set_active(false);
     storage_.session_ended();
+    cpu_performance(false);
+    kf_pending_ = false;
     fprintf(stderr, "session: ended\n");
     update_screen();
   }
@@ -404,7 +447,10 @@ class Daemon {
   json config_;
   bool warned_[256] = {};
   std::unique_ptr<Video> video_dec_;
-  int kf_efd_ = -1;
+  int kf_efd_ = -1, kf_timer_ = -1;
+  bool kf_pending_ = false;
+  bool cpu_perf_on_ = false;
+  std::string saved_epp_;
   uint64_t last_kf_request_us_ = 0;
   unsigned stats_log_ = 0;
 };

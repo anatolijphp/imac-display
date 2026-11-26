@@ -117,6 +117,10 @@ def main():
     ap.add_argument("--seconds", type=float, default=20)
     ap.add_argument("--preset", default="veryfast")
     ap.add_argument("--clip-dir", default="/root/build/clips")
+    ap.add_argument("--partial", action="store_true",
+                    help="leave tiles out: tile 0 in every picture, the others in every second picture")
+    ap.add_argument("--clip", help="stream this Annex B H.264 file as one tile (needs access unit delimiters: "
+                                   "ffmpeg -i IN -c copy -bsf:v h264_metadata=aud=insert -f h264 OUT); --size must match")
     a = ap.parse_args()
     W, H = map(int, a.size.split("x"))
     tiles = tile_layout(W, H, a.tiles)
@@ -126,7 +130,11 @@ def main():
     n = len(tiles)
     clip_dir = os.path.join(a.clip_dir, f"{W}x{H}-{n}t-{a.mbps:g}M-{a.fps}fps-{a.preset}")
     paths = [os.path.join(clip_dir, f"tile{i}.h264") for i in range(n)]
-    if not all(os.path.exists(p) for p in paths):
+    if a.clip:
+        if n != 1:
+            sys.exit("--clip needs --tiles 1")
+        paths = [a.clip]
+    elif not all(os.path.exists(p) for p in paths):
         os.makedirs(clip_dir, exist_ok=True)
         print(f"encoding test clip into {clip_dir} (once)...", flush=True)
         src = (f"drawtext=fontfile=/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf:fontsize={H // 12}:"
@@ -167,6 +175,7 @@ def main():
 
     end = time.monotonic() + a.seconds
     t0 = time.monotonic()
+    pos = [0] * n  # next frame of each tile's clip
     next_ping = 0
     sent = 0
     try:
@@ -176,11 +185,14 @@ def main():
             delay = due - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            k = sent % nframes  # loop the clip; it starts with a keyframe
+            # Which tiles go into this picture. Each tile is its own stream, so a tile that is left out
+            # simply continues with its next frame the next time it is sent.
+            send = [i for i in range(n) if not a.partial or i == 0 or sent % 2 == 0]
             pts = now_us()
-            for i in range(n):
-                au = clips[i][k]
-                flags = (1 if is_idr(au) else 0) | (2 if i == n - 1 else 0)
+            for j, i in enumerate(send):
+                au = clips[i][pos[i] % nframes]  # loop the clip; frame 0 is a keyframe
+                pos[i] += 1
+                flags = (1 if is_idr(au) else 0) | (2 if j == len(send) - 1 else 0)
                 video.sendall(frame(0x10, au, flags=flags, tile=tiles[i]["id"], pts=pts))
             sent += 1
             now = time.monotonic()
@@ -194,7 +206,9 @@ def main():
                     elif t == 0x12:
                         print(f"[{sent:5d} sent] VIDEO_STATS {p.decode()}", flush=True)
                     elif t == 0x11:
-                        print("VIDEO_REQUEST_KEYFRAME (next keyframe comes within 1 s)", flush=True)
+                        # Like the Mac: next picture has a keyframe for every tile (restart the clips).
+                        print("VIDEO_REQUEST_KEYFRAME: restarting the clip at its keyframe", flush=True)
+                        pos = [0] * n
                     elif t in (0x01, 0x03, 0x06):
                         print({1: "HELLO", 3: "CONFIG_ACK", 6: "BYE"}[t], p.decode()[:200], flush=True)
         ctrl.sendall(jframe(0x06, {"reason": "send_video.py done"}))
