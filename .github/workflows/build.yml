@@ -1,7 +1,7 @@
 # Builds both halves of iMac Display:
 #   1. the iMac's Linux installer (a bootable .iso: Arch Linux + the receiver, installed in one go)
 #   2. the MacBook app (iMac Display.dmg)
-#   3. the small app for the iMac's own macOS that restarts it into Linux (Restart in Linux.zip)
+#   3. the small app for the iMac's own macOS that restarts it in display mode (Restart in Display Mode.zip)
 # On every push to main and on pull requests the results are kept as workflow artifacts.
 # On a tag like v0.4 they are also attached to a GitHub release.
 name: Build
@@ -97,7 +97,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Build and test "Restart in Linux" (for macOS on the iMac)
+      - name: Build and test "Restart in Display Mode" (for macOS on the iMac)
         # Two shell scripts in an app bundle; the test is a dry run against a disk image.
         run: |
           imac-macos/build.sh
@@ -105,8 +105,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: imac-display-restart-in-linux
-          path: out/Restart in Linux.zip
+          name: imac-display-restart-in-display-mode
+          path: out/Restart in Display Mode.zip
           if-no-files-found: error
           retention-days: 14
 

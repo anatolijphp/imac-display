@@ -24,7 +24,7 @@ Every push to `main` builds both halves with GitHub Actions (**Actions → Build
 |---|---|---|
 | `imac-display-installer-<date>-x86_64.iso` | the iMac | Bootable installer: Arch Linux plus the receiver, installed in one go, no internet needed |
 | `iMac Display.dmg` | the MacBook | The app, with its sound device inside |
-| `Restart in Linux.zip` | the iMac's macOS (optional) | A small app: launch it in macOS on the iMac and the iMac restarts into Linux once, instead of holding Option at power-on. See [`imac-macos/README.md`](imac-macos/README.md) |
+| `Restart in Display Mode.zip` | the iMac's macOS (optional) | A small app: launch it in macOS on the iMac and the iMac restarts in display mode once, instead of holding Option at power-on. See [`imac-macos/README.md`](imac-macos/README.md) |
 
 ## Install
 
@@ -34,7 +34,7 @@ Every push to `main` builds both halves with GitHub Actions (**Actions → Build
 2. Write the `.iso` to a USB stick (2 GB or more): `tools/make-usb.sh diskN --erase diskN image.iso` on a Mac, or any tool that writes disk images.
 3. Start the iMac holding **Option**, choose **EFI Boot**, type `imac-install`, then `INSTALL` to confirm. It only touches the two partitions named above.
 4. Restart holding **Option** → **EFI Boot**. The iMac shows "Waiting for your Mac".
-5. Optional: put **Restart in Linux** in the iMac's macOS Applications folder. Launching it does step 4 for you; restarting from Linux brings macOS back.
+5. Optional: put **Restart in Display Mode** in the iMac's macOS Applications folder. Launching it does step 4 for you; the Restart button on the iMac's waiting screen brings macOS back.
 
 **MacBook**
 
@@ -47,7 +47,7 @@ Every push to `main` builds both halves with GitHub Actions (**Actions → Build
 
     linux/iso/build.sh          # the installer image; needs Docker (macOS or Linux)
     mac/scripts/build-app.sh    # the app; needs a Mac with the Command Line Tools
-    imac-macos/build.sh         # "Restart in Linux" for the iMac's macOS; needs a Mac
+    imac-macos/build.sh         # "Restart in Display Mode" for the iMac's macOS; needs a Mac
 
 Options are described at the top of each script.
 
@@ -57,7 +57,7 @@ Options are described at the top of each script.
 |---|---|
 | `mac/` | The MacBook app, its sound driver, and a development test tool |
 | `receiver/` | `imacdisplayd`, the program the iMac runs |
-| `imac-macos/` | "Restart in Linux", a small app for the iMac's own macOS |
+| `imac-macos/` | "Restart in Display Mode", a small app for the iMac's own macOS |
 | `linux/` | The iMac's system: installer image definition (`linux/iso/`) and the receiver's system files (`linux/rootfs/`) |
 | `PROTOCOL.md` | The wire format between the two |
 | `docs/` | Install guide, hardware measurements, notes between the two development sessions |

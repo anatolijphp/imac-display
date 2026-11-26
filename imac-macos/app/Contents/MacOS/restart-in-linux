@@ -1,6 +1,9 @@
 #!/bin/bash
-# Restart in Linux.app: runs in macOS on the iMac and restarts it into the Linux that makes it
-# a display for the MacBook. Linux starts once; the restart after that brings macOS back.
+# Restart in Display Mode.app: runs in macOS on the iMac and restarts it into display mode (the
+# Linux that makes it a display for the MacBook). Display mode starts once; the restart after
+# that brings macOS back. What the user reads says "display mode", never "Linux". The file names
+# and the bundle identifier still say "restart-in-linux": they are what an installed helper and
+# macOS's permission for this app are tied to.
 #
 # The work that needs root is in Resources/restart-in-linux-helper. This script asks, gets the
 # rights (the system's administrator dialog, or sudo once the helper is installed) and then
@@ -13,11 +16,11 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 set -u
 
-TITLE="Restart in Linux"
+TITLE="Restart in Display Mode"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HELPER="$HERE/../Resources/restart-in-linux-helper"
 INSTALLED=/Library/PrivilegedHelperTools/local.imac-display.restart-in-linux
-LOG="$HOME/Library/Logs/Restart in Linux.log"
+LOG="$HOME/Library/Logs/Restart in Display Mode.log"
 DRY="${RIL_DRY_RUN:-}"
 
 ASK_ONCE="Restart"
@@ -60,7 +63,7 @@ on run argv
     repeat with a in argv
         set cmd to cmd & quoted form of (a as text) & " "
     end repeat
-    do shell script cmd with prompt "Restart in Linux wants to choose the system this iMac starts next." with administrator privileges
+    do shell script cmd with prompt "Restart in Display Mode wants to choose the system this iMac starts next." with administrator privileges
 end run
 EOS
 )" && { echo "$out"; return 0; }
@@ -76,20 +79,20 @@ restart_now() {
     osascript -e 'tell application "System Events" to restart' >/dev/null 2>&1 && return 0
     osascript -e 'tell application "loginwindow" to «event aevtrrst»' >/dev/null 2>&1 && return 0
     log "could not restart by itself"
-    ask "Linux starts at the next restart.
+    ask "Display mode starts at the next restart.
 
 This app was not allowed to restart the iMac itself: choose Apple menu > Restart." "OK" >/dev/null
 }
 
 if [ -z "$DRY" ]; then
     if [ "$(uname -m)" != x86_64 ] || [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
-        problem "This app is for the iMac: it restarts an Intel Mac into the Linux that the iMac Display installer put there. It does nothing on this Mac."
+        problem "This app is for the iMac: it restarts an Intel Mac in display mode, which the iMac Display installer puts there. It does nothing on this Mac."
     fi
 fi
 [ -x "$HELPER" ] || problem "The app is incomplete (its helper is missing). Copy the whole app again."
 
 "$HELPER" --find >/dev/null 2>&1 \
-    || problem "This Mac has no partition named LINUXBOOT, so there is no Linux to restart into. Install it with the iMac Display installer first."
+    || problem "Display mode is not installed on this Mac (there is no partition named LINUXBOOT). Install it with the iMac Display installer first."
 
 # Installed helper of this version, and sudo lets us run it without a password: no question, go.
 if [ -z "$DRY" ] && [ -x "$INSTALLED" ] && [ "$("$INSTALLED" --version 2>/dev/null)" = "$("$HELPER" --version)" ] \
@@ -100,9 +103,9 @@ if [ -z "$DRY" ] && [ -x "$INSTALLED" ] && [ "$("$INSTALLED" --version 2>/dev/nu
     exit 0
 fi
 
-CHOICE="$(ask "Restart this iMac into Linux, as a display for your MacBook?
+CHOICE="$(ask "Restart this iMac in display mode?
 
-Linux starts once. To come back to macOS, restart the iMac again.
+It becomes a display for your MacBook. To come back to macOS, restart it again (the Restart button on its waiting screen).
 
 macOS asks for an administrator password for this. With \"$ASK_NEVER\" a small helper is installed, and from then on this app restarts the iMac straight away, without this question and without a password." "Cancel" "$ASK_NEVER" "$ASK_ONCE")" || exit 0
 

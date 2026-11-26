@@ -2,18 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Restart in Linux</string>
-    <key>CFBundleDisplayName</key><string>Restart in Linux</string>
+    <key>CFBundleName</key><string>Restart in Display Mode</string>
+    <key>CFBundleDisplayName</key><string>Restart in Display Mode</string>
     <key>CFBundleIdentifier</key><string>local.imac-display.restart-in-linux</string>
     <key>CFBundleExecutable</key><string>restart-in-linux</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>10.11</string>
     <!-- No Dock icon: the app is a question and a restart, nothing to switch to. -->
     <key>LSUIElement</key><true/>
-    <key>NSAppleEventsUsageDescription</key><string>Restart in Linux asks macOS to restart this iMac.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Restart in Display Mode asks macOS to restart this iMac.</string>
     <key>NSHumanReadableCopyright</key><string>Part of iMac Display.</string>
 </dict>
 </plist>

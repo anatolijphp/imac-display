@@ -1,5 +1,5 @@
 #!/bin/bash
-# Restart in Linux: the part that needs root.
+# Restart in Display Mode: the part that needs root. (Messages say "display mode"; it is Linux.)
 #
 # Finds the Linux boot partition made by imac-install (FAT, labelled LINUXBOOT, holding
 # systemd-boot) and tells the Mac's firmware to start from it ONCE (bless --nextonly).
@@ -64,7 +64,7 @@ install_self() {
     xattr -c "$INSTALLED" 2>/dev/null
     rule="$(mktemp -t restart-in-linux-rule)" || return 1
     {
-        echo "# Installed by \"Restart in Linux.app\" (iMac Display). Lets this one user run this one"
+        echo "# Installed by \"Restart in Display Mode.app\" (iMac Display). Lets this one user run this one"
         echo "# root-owned script, without arguments, without a password. Remove this file to undo."
         echo "#$uid ALL=(root) NOPASSWD: $INSTALLED \"\""
     } > "$rule"
@@ -88,13 +88,13 @@ esac
 if [ -z "$DRY" ]; then
     [ "$(id -u)" = 0 ] || fail "This must run as root."
     [ "$(uname -m)" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" != 1 ] \
-        || fail "This is for an Intel Mac. An Apple silicon Mac cannot start this Linux."
+        || fail "This is for an Intel Mac. An Apple silicon Mac cannot start display mode."
 fi
 
 # The helper is installed first, so that a later problem with the partition does not lose the choice.
 [ "${1:-}" = --install ] && install_self "$2"
 
-DEV="$(find_partition)" || fail "No partition named $LABEL was found. Linux is installed with the iMac Display installer (imac-install)."
+DEV="$(find_partition)" || fail "No partition named $LABEL was found. Display mode is installed with the iMac Display installer (imac-install)."
 
 MOUNTED_HERE=""
 MNT="$(info "$DEV" MountPoint)"
@@ -108,7 +108,7 @@ finish() { [ -n "$MOUNTED_HERE" ] && diskutil unmount "$DEV" >/dev/null 2>&1; rm
 trap finish EXIT
 
 [ -f "$MNT/$LOADER" ] && [ -f "$MNT/$MARKER" ] \
-    || fail "The partition $LABEL ($DEV) does not hold the Linux boot loader ($LOADER). Install Linux again with imac-install."
+    || fail "The partition $LABEL ($DEV) does not hold the boot loader of display mode ($LOADER). Install it again with imac-install."
 
 if [ -n "$DRY" ]; then
     echo "would run: bless --mount $MNT --file $MNT/$LOADER --setBoot --nextonly --shortform"
@@ -120,4 +120,4 @@ fi
 ERR="$(bless --mount "$MNT" --file "$MNT/$LOADER" --setBoot --nextonly --shortform 2>&1)" \
     || ERR="$(bless --mount "$MNT" --file "$MNT/$LOADER" --setBoot --nextonly 2>&1)" \
     || fail "macOS refused to change the startup system: $ERR"
-echo "Linux ($DEV) starts at the next restart."
+echo "Display mode ($DEV) starts at the next restart."
