@@ -34,7 +34,7 @@ Turn an iMac Retina 5K, 27-inch, Late 2015 (iMac17,1) into a display, USB hub an
 
 `PROTOCOL.md` is the contract between the two halves (the MacBook app and `imacdisplayd`).
 
-Working on the running iMac: the user is usually looking at that screen. Stopping `imacdisplayd` drops their picture, so do it rarely, say so, and put it back. Before rebuilding the boot image (`mkinitcpio -P`), keep the previous one (`/boot/initramfs-linux-prev.img`).
+Working on the running iMac: the user is usually looking at that screen. Stopping `imacdisplayd` drops their picture, so do it rarely, say so, and put it back. Before rebuilding the boot image (`mkinitcpio -P`), keep the previous one (`/boot/initramfs-linux-prev.img`). **Never restart the iMac with `kexec`:** the graphics chip does not initialise after it (`amdgpu ... Fatal error during GPU init`, tried 2026-11-27), the screen stays black and only a normal restart, which lands in macOS, brings it back.
 
 ## Working rules
 

@@ -6,7 +6,7 @@
 # times out, no SSH, the MacBook cannot find the iMac). Joining the same network again cures it at
 # once. Switching Wi-Fi power saving off (iwd main.conf) did not prevent it; the cause is not known.
 #
-# So: every few seconds ask the router for its hardware address (ARP; every router answers that).
+# So: every few seconds (every second in the first two minutes after the start) ask the router for its hardware address (ARP; every router answers that).
 # No answer several times in a row while iwd says "connected" = the state above: disconnect, connect
 # to the same network again, ask systemd-networkd for a fresh address. What it sees and does goes to
 # the journal:  journalctl -u imac-wifi-watchdog
@@ -25,9 +25,17 @@ station() {  # the iwd object of the Wi-Fi card
   return 1
 }
 
+early() {  # the first two minutes after the start: when the fault shows, and when waiting hurts most
+  [ "$(cut -d. -f1 /proc/uptime)" -lt 120 ]
+}
+
 alive() {  # does the router answer?
   if [ -n "${WATCHDOG_TEST:-}" ] && [ "$tested" -lt 2 ]; then tested=$((tested + 1)); return 1; fi
-  arping -q -c 2 -w 2 -I "$IF" "$1" >/dev/null 2>&1 || ping -q -c 1 -W 1 -I "$IF" "$1" >/dev/null 2>&1
+  if early; then
+    arping -q -f -c 1 -w 1 -I "$IF" "$1" >/dev/null 2>&1
+  else
+    arping -q -c 2 -w 2 -I "$IF" "$1" >/dev/null 2>&1 || ping -q -c 1 -W 1 -I "$IF" "$1" >/dev/null 2>&1
+  fi
 }
 
 tested=0
@@ -35,12 +43,13 @@ fails=0
 rejoins=0
 pause=3
 while sleep "$pause"; do
-  pause=3
+  if early; then pause=1; else pause=3; fi
   gw="$(ip -4 route show default dev "$IF" 2>/dev/null | awk '{ print $3; exit }')"
   if [ -z "$gw" ]; then fails=0; continue; fi          # no address yet, or Wi-Fi not in use
   if alive "$gw"; then
     [ "$rejoins" -gt 0 ] && echo "Wi-Fi passes traffic again (router $gw answers)"
-    fails=0; rejoins=0; pause=10
+    fails=0; rejoins=0
+    early || pause=10
     continue
   fi
   fails=$((fails + 1))
@@ -68,5 +77,5 @@ while sleep "$pause"; do
   fi
   rejoins=$((rejoins + 1))
   # Give the new connection time; if it keeps failing, slow down instead of flapping.
-  if [ "$rejoins" -ge 3 ]; then pause=60; else pause=10; fi
+  if [ "$rejoins" -ge 3 ]; then pause=60; elif early; then pause=3; else pause=10; fi
 done
