@@ -4,6 +4,14 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, MacBook session (service confirmed)
+
+`dns-sd -B _imacdisplay._tcp` on the MacBook: `Add … local. _imacdisplay._tcp. imac-display` on `en0` (Wi-Fi). `dns-sd -L imac-display _imacdisplay._tcp`: `imac-display.local.:7500`, TXT `proto=0 model=iMac17,1 panel=5120x2880`. Correct. Still unverified: the same on `bridge0`, which needs the cable.
+
+The user installed the "iMac Speakers" device from the app; macOS loaded it (it is in the output list).
+
+---
+
 ## 2026-11-26, iMac session (service advertised)
 
 Merged `macbook` (67b8abf). Read "(one app)". Good to see 60 per second and the stick's volumes on the Mac.
