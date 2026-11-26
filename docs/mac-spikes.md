@@ -102,6 +102,26 @@ The MacBook side held 60.0 pictures per second for 25 s with a 6 ms encode time 
 - `DataRateLimits` (to make keyframes smaller) is accepted by the low-latency encoder and has no effect: a 1080p keyframe stays at about 270 kB at 10 Mbit/s.
 - One 30 s run had a 6.3 s gap in the capture on the MacBook (1321 pictures instead of about 1800). It did not happen again in three later runs; cause unknown.
 
+## 7. Where the time goes at 3840×2160 (measured over Wi-Fi, 2026-11-26)
+
+`imd pipeline --host imac-display.local --capture 3840x2160 --capture-fps 120 --seconds 16` with the scrolling-text test picture, sound and input off. MacBook numbers from the tool, iMac numbers from `imacdisplayd`'s own log. Wi-Fi at the time: `iperf3` 119–123 Mbit/s, ping 3.0 / 28.1 / 151.9 ms (min / avg / max).
+
+| Run | MacBook: capture → encoded, ms (p50 / p95) | MacBook: socket write, ms (p50 / p95 / max) | Pictures reaching the iMac per second | iMac: arrival → on screen, ms | iMac: shown / dropped per second |
+|---|---|---|---|---|---|
+| One stream, 20 Mbit/s | 16.3 / 17.3 | 0.2 / 0.3 / 263 | 59.8 | **55–59** | 53–56 / 4–7 |
+| One stream, 40 Mbit/s | 16.3 / 17.4 | 0.5 / **73** / 676 | **45** | 67–73 | 39–40 / 2–5 |
+| Four 1920×1080 tiles, 20 Mbit/s | 24.4 / 26.2 (of which cutting 7.5) | 0.3 / 0.5 / 32 | 60.0 | **24** | 56–58 / 2–5 |
+
+What limits what:
+
+1. **The iMac's decoder arrangement for one large stream is the biggest item.** For a tile larger than 2560×1440 the receiver uses frame threads, which hold each picture back about three frames. The same picture as four tiles is decoded side by side with no hold-back: 24 ms instead of 55–59 ms. The app therefore sends pictures larger than 2560×1440 as 2 × 2 tiles; with the app the iMac logged 20–30 ms.
+2. **The iMac's page flip** is 16–17 ms of that 24 ms: a picture waits a whole refresh. Open on the iMac side.
+3. **The MacBook's encoder**: 16 ms for 3840×2160 whether as one stream or four (the hardware limit of section 3). Cutting into tiles costs another 7.5 ms here, which is more than copying 12 MB should take; not looked into yet.
+4. **Wi-Fi** carries 20 Mbit/s without trouble and does not carry 40: the socket backs up (p95 73 ms) and only 45 pictures per second get through. This is the one item the Thunderbolt cable is expected to remove.
+5. In every run the iMac drops 2–7 pictures per second ("newest wins" when two arrive close together). Whether that is Wi-Fi's uneven delivery is not known until the cable is tested.
+
+Sum for the tiled case: about 24 ms on the MacBook, a few ms of Wi-Fi, about 24 ms on the iMac: **roughly 50 ms** from the MacBook's screen refresh to the iMac's, against roughly 75–80 ms for one stream. Added up from the parts, not measured end to end.
+
 ## Expected delay, not measured
 
 Adding up the parts for 4K: encode about 17 ms, decode on the iMac about 10 ms (104 pictures per second), then up to one refresh (17 ms) to show it. Roughly 30 to 45 ms from the MacBook drawing a picture to the iMac showing it, before any network delay. This is arithmetic from the numbers above, not a measurement; the real figure comes in M3.

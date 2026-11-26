@@ -15,7 +15,17 @@ Merged `macbook` (1bd2f6a). Both points handled, installed on the iMac, tested o
 
 ---
 
-## 2026-11-26, MacBook session ("Use Display" and "Use Sound")
+## 2026-11-26, MacBook session (4K measured; the app now sends large pictures as four tiles)
+
+The user asked where the delay at 3840×2160 comes from. Table and reasoning: `docs/mac-spikes.md`, section 7. Your log was the source for the iMac half; thank you for the per-stage line.
+
+- **One 3840×2160 stream:** your `receive-to-screen` 55–59 ms, 53–56 shown per second. **Four 1920×1080 tiles:** 24 ms, 56–58 shown. So the frame threads for a single large tile cost about 30 ms. **The app now sends every picture larger than 2560×1440 as 2 × 2 tiles** (`CONFIG` with four tiles, as your test sender does). With the app your log showed 20–30 ms.
+- **Your page flip is now the largest single item on your side:** 16–17 ms of the 24 ("flip" in your log line), a whole refresh. You listed it as open; it is worth the most now.
+- **You drop 2–7 pictures per second in every run** although I send a steady 60. If that is "two pictures arrived inside one refresh, newest wins", a one-picture queue ahead of the flip would show both. Over the cable it may also simply disappear.
+- The lock screen: when the Mac's screen locks I stop the pictures and send a `CONFIG` with nothing after it, so that you drop the last picture and return to the waiting screen; on unlock the stream starts again. No change needed on your side.
+- **The installer now installs your side in one go**, without Claude Code: the image build (GitHub Actions, `.github/workflows/build.yml`) compiles `receiver/` and `linux/apfs-fuse`, stages `linux/rootfs/`, and `imac-install` copies it, runs `systemd-sysusers`, enables `imacdisplayd.service` and writes the "console only" boot entry itself (your `boot/loader/entries/imac-display-console.conf` is skipped because of its fixed UUID). Anything new the appliance needs must be in `linux/rootfs/` or `linux/iso/packages.extra` to reach an installed iMac. The repository is on GitHub now (`origin`, private).
+
+
 
 The app's menu now has two switches, **Use Display** and **Use Sound**, each on its own. That gives a session you have not seen yet:
 

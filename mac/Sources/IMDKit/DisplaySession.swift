@@ -49,7 +49,8 @@ public final class DisplaySession {
     private var session: Session?
     private var display: VirtualDisplay?
     private var capture: DisplayCapture?
-    private var encoder: H264Encoder?
+    private var encoders: [H264Encoder] = []
+    private var maxTiles = 1
     private var injector: InputInjector?
     private var mounter: StorageMounter?
     private var speakers: SpeakerDevice?
@@ -79,6 +80,7 @@ public final class DisplaySession {
         let decode = hello["decode"] as? [String: Any] ?? [:]
         limitWidth = min(c.maxStreamWidth, decode["max_w"] as? Int ?? 3840)
         limitHeight = min(c.maxStreamHeight, decode["max_h"] as? Int ?? 2160)
+        maxTiles = decode["max_tiles"] as? Int ?? 1
         let features = hello["features"] as? [String] ?? []
         let audio = hello["audio"] as? [String: Any] ?? [:]
 
@@ -157,7 +159,8 @@ public final class DisplaySession {
     /// The picture to send for a display of this many pixels: the same shape, at most the iMac's limit, even numbers.
     private func streamSize(for pixels: (width: Int, height: Int)) -> (Int, Int) {
         let scale = min(1.0, Double(limitWidth) / Double(pixels.width), Double(limitHeight) / Double(pixels.height))
-        return (Int(Double(pixels.width) * scale) / 2 * 2, Int(Double(pixels.height) * scale) / 2 * 2)
+        // Multiples of 4, so that the picture can be cut into 2 × 2 tiles of even size.
+        return (Int(Double(pixels.width) * scale) / 4 * 4, Int(Double(pixels.height) * scale) / 4 * 4)
     }
 
     /// Tells the iMac the picture size, then starts encoder and capture for the display's current resolution.
@@ -168,20 +171,36 @@ public final class DisplaySession {
         streamWidth = w; streamHeight = h
         if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
 
-        try await configure(width: w, height: h)
+        // A picture larger than 2560×1440 goes as four tiles. Measured over Wi-Fi at 3840×2160: as one
+        // stream the iMac needs frame threads to keep up, which hold every picture back about 3 frames
+        // (55-59 ms from arrival to screen); as four 1920×1080 tiles it decodes them side by side at
+        // once (24 ms). The cost on this side is cutting the picture up (about 8 ms).
+        let tiled = (w > 2560 || h > 1440) && maxTiles >= 4
+        let tiles = tiled ? TileRect.grid(width: w, height: h, cols: 2, rows: 2) : TileRect.grid(width: w, height: h, cols: 1, rows: 1)
+        let splitter = tiled ? TileSplitter(tiles: tiles) : nil
+        try await configure(width: w, height: h, tiles: tiles)
         if s.video == nil { try await Task.detached { try s.openVideo() }.value }
 
-        var enc = H264Encoder.Config(width: w, height: h, fps: c.fps, bitrate: min(c.maxBitrate, max(6_000_000, Int(Double(w * h) * 4.8))))
-        enc.lowLatency = true
-        let encoder = try H264Encoder(enc)
-        self.encoder = encoder
-        encoder.onOutput = { [weak self] out in
-            guard let self, let session = self.session else { return }
-            do {
-                try session.sendVideo(tile: 0, keyframe: out.keyframe, lastTile: true, ptsUs: out.ptsUs, data: out.annexB)
-                self.sentCounter.add()
-            } catch { self.finish("\(error)") }
+        let bitrate = min(c.maxBitrate, max(6_000_000, Int(Double(w * h) * 4.8)))
+        var encoders: [H264Encoder] = []
+        let assembler = PictureAssembler(tiles: tiles.count)
+        for t in tiles {
+            var enc = H264Encoder.Config(width: t.w, height: t.h, fps: c.fps, bitrate: bitrate / tiles.count)
+            enc.lowLatency = true
+            let encoder = try H264Encoder(enc)
+            encoder.onOutput = { [weak self] out in
+                // Send a picture when all its tiles are encoded, in tile order, the last one marked.
+                guard let self, let session = self.session, let picture = assembler.add(tile: t.id, out) else { return }
+                do {
+                    for (n, p) in picture.enumerated() {
+                        try session.sendVideo(tile: n, keyframe: p.keyframe, lastTile: n == picture.count - 1, ptsUs: p.ptsUs, data: p.annexB)
+                    }
+                    self.sentCounter.add()
+                } catch { self.finish("\(error)") }
+            }
+            encoders.append(encoder)
         }
+        self.encoders = encoders
 
         let capture = DisplayCapture()
         var first = true
@@ -189,7 +208,14 @@ public final class DisplaySession {
             guard let self else { return }
             let key = first || self.keyframeWanted.take()
             first = false
-            encoder.encode(pixelBuffer, ptsUs: Wire.nowUs(), forceKeyframe: key)
+            let pts = Wire.nowUs()
+            if let splitter {
+                guard let parts = splitter.split(pixelBuffer) else { return }
+                // The low-latency encoder blocks its caller while it works: run the tiles side by side.
+                DispatchQueue.concurrentPerform(iterations: parts.count) { i in encoders[i].encode(parts[i], ptsUs: pts, forceKeyframe: key) }
+            } else {
+                encoders[0].encode(pixelBuffer, ptsUs: pts, forceKeyframe: key)
+            }
         }
         if screenAudio { capture.onAudio = { [weak self] in self?.pcm($0) } }
         capture.onStop = { [weak self, weak capture] error in
@@ -207,7 +233,7 @@ public final class DisplaySession {
                 // Twice the frame rate as the minimum interval: asking for exactly 1/60 s loses pictures.
                 try await capture.start(displayID: vd.displayID, width: w, height: h, fps: c.fps * 2, audio: screenAudio)
                 self.capture = capture
-                log("display \(desktopWidth)x\(desktopHeight), sending \(w)x\(h) at \(enc.bitrate / 1_000_000) Mbit/s")
+                log("display \(desktopWidth)x\(desktopHeight), sending \(w)x\(h)\(tiled ? " as 4 tiles" : "") at \(bitrate / 1_000_000) Mbit/s")
                 return
             } catch {
                 lastError = error
@@ -218,12 +244,13 @@ public final class DisplaySession {
     }
 
     /// Sends CONFIG and waits for the iMac's answer.
-    @MainActor private func configure(width w: Int, height h: Int) async throws {
+    @MainActor private func configure(width w: Int, height h: Int, tiles: [TileRect]? = nil) async throws {
         guard let s = session else { throw CaptureError("no session") }
+        let tiles = tiles ?? TileRect.grid(width: w, height: h, cols: 1, rows: 1)
         setAck(nil)
         try s.sendConfig([
             "video": ["codec": "h264", "fps": config.fps, "w": w, "h": h, "scale": "fit",
-                      "tiles": [["id": 0, "x": 0, "y": 0, "w": w, "h": h]]] as [String: Any],
+                      "tiles": tiles.map { ["id": $0.id, "x": $0.x, "y": $0.y, "w": $0.w, "h": $0.h] }] as [String: Any],
             "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
             "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
         ])
@@ -271,8 +298,8 @@ public final class DisplaySession {
         let old = capture
         capture = nil            // first, so that its stop handler does not restart it
         await old?.stop()
-        encoder?.flush()
-        encoder = nil
+        encoders.forEach { $0.flush() }
+        encoders = []
     }
 
     /// The capture ended by itself: start it again (or wait for the unlock).
@@ -378,9 +405,30 @@ public final class DisplaySession {
         }
         self.capture = nil
         self.display = nil
-        self.encoder = nil
+        self.encoders = []
         self.screenObserver = nil
         onEnd?(reason)
+    }
+}
+
+/// Gathers the encoded tiles of one picture (same pts) and returns them in tile order once all are there.
+final class PictureAssembler {
+    private let count: Int
+    private var pending: [UInt64: [H264Encoder.Output?]] = [:]
+    private let lock = NSLock()
+    init(tiles: Int) { count = tiles }
+    func add(tile: Int, _ out: H264Encoder.Output) -> [H264Encoder.Output]? {
+        lock.lock(); defer { lock.unlock() }
+        var slots = pending[out.ptsUs] ?? [H264Encoder.Output?](repeating: nil, count: count)
+        slots[tile] = out
+        let done = slots.compactMap { $0 }
+        if done.count == count {
+            pending[out.ptsUs] = nil
+            if pending.count > 8 { pending.removeAll() }   // pictures that never completed (an encoder failed)
+            return done
+        }
+        pending[out.ptsUs] = slots
+        return nil
     }
 }
 
