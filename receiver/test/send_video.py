@@ -10,7 +10,7 @@ One FFmpeg process encodes all tiles from the same source (split filter), so til
 Clips are cached in --clip-dir; encoding ahead keeps the receiver's CPU to itself.
 Prints the receiver's VIDEO_STATS once per second.
 """
-import argparse, json, os, select, socket, struct, subprocess, sys, time, uuid
+import argparse, random, json, os, select, socket, struct, subprocess, sys, time, uuid
 
 HDR = struct.Struct("<IBBHQ")
 
@@ -121,6 +121,8 @@ def main():
                     help="send the CONFIG again after this many seconds (like a resolution change), then a keyframe")
     ap.add_argument("--partial", action="store_true",
                     help="leave tiles out: tile 0 in every picture, the others in every second picture")
+    ap.add_argument("--jitter", type=float, default=0,
+                    help="send each picture up to this many ms late (uniform, still in order), like Wi-Fi")
     ap.add_argument("--clip", help="stream this Annex B H.264 file as one tile (needs access unit delimiters: "
                                    "ffmpeg -i IN -c copy -bsf:v h264_metadata=aud=insert -f h264 OUT); --size must match")
     a = ap.parse_args()
@@ -184,7 +186,7 @@ def main():
     try:
         while time.monotonic() < end:
             # Pace at exactly fps, like a display refresh on the Mac.
-            due = t0 + sent / a.fps
+            due = t0 + sent / a.fps + (random.uniform(0, a.jitter) / 1000 if a.jitter else 0)
             delay = due - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
