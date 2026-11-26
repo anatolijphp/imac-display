@@ -195,6 +195,7 @@ bool Display::open() {
   fd_ = fd;
   memset(map_, 0, size_);
   saved_crtc_ = drmModeGetCrtc(fd_, crtc_id_);
+  mode_ = new drmModeModeInfo(mode);
   if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, &mode) != 0) {
     fprintf(stderr, "display: setting mode %dx%d failed: %s\n", w_, h_, strerror(errno));
     close();
@@ -232,6 +233,9 @@ void Display::close() {
   fd_ = -1;
   if (base_) cairo_surface_destroy(base_);
   base_ = nullptr;
+  delete (drmModeModeInfo*)mode_;
+  mode_ = nullptr;
+  paused_ = false;
   fprintf(stderr, "display: screen given back to the console\n");
 }
 
@@ -284,8 +288,28 @@ void Display::copy_rect(int x, int y, int w, int h) {
   for (int r = y; r < y + h && r < h_; r++) memcpy(map_ + r * pitch_ + x * 4, src + r * stride + x * 4, w * 4);
 }
 
-void Display::show(const Status& s) {
+ScreenTarget Display::target() const {
+  ScreenTarget t;
+  t.fd = fd_;
+  t.crtc_id = crtc_id_;
+  t.conn_id = conn_id_;
+  t.mode = mode_;
+  t.w = w_;
+  t.h = h_;
+  return t;
+}
+
+void Display::resume() {
   if (fd_ < 0) return;
+  paused_ = false;
+  if (drmModeSetCrtc(fd_, crtc_id_, fb_id_, 0, 0, &conn_id_, 1, (drmModeModeInfo*)mode_) != 0)
+    fprintf(stderr, "display: taking the screen back failed: %s\n", strerror(errno));
+  has_status_ = false;  // force a full redraw on the next show()
+  if (base_) { copy_rect(0, 0, w_, h_); drmModeDirtyFB(fd_, fb_id_, nullptr, 0); }
+}
+
+void Display::show(const Status& s) {
+  if (fd_ < 0 || paused_) return;
   if (has_status_ && s.state == status_.state && s.mac_name == status_.mac_name && s.footer == status_.footer) return;
   status_ = s;
   has_status_ = true;
@@ -296,7 +320,7 @@ void Display::show(const Status& s) {
 }
 
 void Display::animate() {
-  if (fd_ < 0 || !has_status_) return;
+  if (fd_ < 0 || !has_status_ || paused_) return;
   frame_++;
   // Draw the dots on a copy of the base picture in that small rectangle, then copy it out.
   cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_RGB24, dots_w_, dots_h_);

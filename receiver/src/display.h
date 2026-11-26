@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include "video.h"
+
 typedef struct _cairo_surface cairo_surface_t;
 
 class Display {
@@ -27,6 +29,12 @@ class Display {
   void animate();              // next frame of the "waiting" dots; call ~15 times a second
   bool save_png(const std::string& path) const;  // the current picture, for checking without looking
 
+  // Video borrows the panel: pause() stops drawing, target() describes the panel, resume() puts the
+  // waiting screen back up (called by the video presenter before it frees its buffers).
+  ScreenTarget target() const;
+  void pause() { paused_ = true; }
+  void resume();
+
  private:
   void render_base(const Status& s);
   void copy_rect(int x, int y, int w, int h);  // base surface -> scanout buffer
@@ -43,4 +51,6 @@ class Display {
   Status status_;
   int dots_x_ = 0, dots_y_ = 0, dots_w_ = 0, dots_h_ = 0, dot_r_ = 0;
   unsigned frame_ = 0;
+  bool paused_ = false;
+  void* mode_ = nullptr;  // drmModeModeInfo
 };

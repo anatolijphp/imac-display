@@ -1,6 +1,6 @@
 // imacdisplayd: the iMac side of PROTOCOL.md.
 // Done so far: session (HELLO, CONFIG, PING, BYE, 3 s timeout), keyboard and mouse forwarding, USB drives over SMB.
-// Waiting screen on the bare panel. Not yet: video decode and display, sound.
+// Waiting screen on the bare panel, video (CPU decode per tile, GPU display). Not yet: sound.
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -22,6 +23,7 @@
 #include "display.h"
 #include "input.h"
 #include "storage.h"
+#include "video.h"
 #include "net.h"
 #include "protocol.h"
 
@@ -61,6 +63,7 @@ class Daemon {
     timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec its{{1, 0}, {1, 0}};
     timerfd_settime(timer_, 0, &its, nullptr);
+    kf_efd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     anim_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec ats{{0, 66666666}, {0, 66666666}};  // 15 fps for the waiting dots
     timerfd_settime(anim_, 0, &ats, nullptr);
@@ -82,6 +85,7 @@ class Daemon {
       if (video_) add(video_->fd(), POLLIN | (video_->wants_write() ? POLLOUT : 0), 4);
       add(input_.inotify_fd(), POLLIN, 5);
       add(storage_.udev_fd(), POLLIN, 7);
+      add(kf_efd_, POLLIN, 9);
       for (int fd : input_.fds()) add(fd, POLLIN, 6);
 
       if (poll(pfds.data(), pfds.size(), -1) < 0) {
@@ -102,10 +106,12 @@ class Daemon {
           case 6: input_.on_readable(fd); break;
           case 7: storage_.on_udev(); break;
           case 8: { uint64_t n; (void)!read(anim_, &n, sizeof n); display_.animate(); break; }
+          case 9: { uint64_t n; (void)!read(kf_efd_, &n, sizeof n); send_keyframe_request(); break; }
         }
       }
     }
     end_session("receiver shutting down");
+    stop_video();
     display_.close();
     return 0;
   }
@@ -235,6 +241,7 @@ class Daemon {
       config_ = c;
       fprintf(stderr, "session: CONFIG accepted: %s\n", c["video"].dump().c_str());
       ctrl_->send_json(proto::CONFIG_ACK, R"({"ok":true})");
+      start_video(c["video"]);
     } else {
       fprintf(stderr, "session: CONFIG rejected: %s\n", err.c_str());
       ctrl_->send_json(proto::CONFIG_ACK, json{{"ok", false}, {"error", err}}.dump());
@@ -244,7 +251,7 @@ class Daemon {
   void service_video(short rev, bool buffered_only = false) {
     if (rev & POLLOUT) video_->on_writable();
     auto on_frame = [&](const proto::Header& h, const uint8_t* p) {
-      if (h.type == proto::VIDEO_FRAME) { video_frames_++; video_bytes_ += h.length; }
+      if (h.type == proto::VIDEO_FRAME && video_dec_) video_dec_->push(h.tile, h.flags, h.pts_us, p, h.length);
       return true;
     };
     bool ok = buffered_only ? video_->process(on_frame) : video_->on_readable(on_frame);
@@ -252,6 +259,39 @@ class Daemon {
       fprintf(stderr, "session: video connection closed\n");
       video_.reset();
     }
+  }
+
+  void start_video(const json& v) {
+    stop_video();
+    VideoConfig cfg;
+    cfg.w = v.value("w", 0);
+    cfg.h = v.value("h", 0);
+    for (const auto& t : v["tiles"])
+      cfg.tiles.push_back({t.value("id", 0), t.value("x", 0), t.value("y", 0), t.value("w", 0), t.value("h", 0)});
+    ScreenTarget target;  // fd -1: decode without showing (no display)
+    if (display_.is_open()) {
+      display_.pause();
+      target = display_.target();
+    }
+    video_dec_ = std::make_unique<Video>(
+        target, cfg,
+        [this] { uint64_t one = 1; (void)!write(kf_efd_, &one, sizeof one); },
+        [this] { display_.resume(); });
+  }
+
+  void stop_video() {
+    if (!video_dec_) return;
+    video_dec_.reset();   // the presenter puts the waiting screen back before freeing its buffers
+    display_.resume();    // (also when no picture was ever shown)
+    update_screen();
+  }
+
+  void send_keyframe_request() {
+    uint64_t now = now_us();
+    if (!ctrl_ || now - last_kf_request_us_ < 250000) return;  // at most 4 per second
+    last_kf_request_us_ = now;
+    ctrl_->send(proto::VIDEO_REQUEST_KEYFRAME, nullptr, 0);
+    fprintf(stderr, "video: asked the MacBook for a keyframe\n");
   }
 
   // Waiting screen: cable state, session state, and the link's addresses in the footer.
@@ -312,11 +352,18 @@ class Daemon {
     uint8_t ping[8];
     proto::put_u64(ping, now);
     ctrl_->send(proto::PING, ping, sizeof ping);
-    if (video_frames_) {
-      // Video is received but not decoded yet (stage 3 of the receiver).
-      fprintf(stderr, "video: %llu frames, %.1f Mbit/s received (not decoded yet)\n",
-              (unsigned long long)video_frames_, video_bytes_ * 8 / 1e6);
-      video_frames_ = video_bytes_ = 0;
+    if (video_dec_) {
+      VideoStats s = video_dec_->take_stats();
+      char buf[160];
+      snprintf(buf, sizeof buf, R"({"decoded":%u,"dropped":%u,"decode_ms":%.1f,"present_ms":%.1f})", s.decoded,
+               s.dropped, s.decode_ms, s.present_ms);
+      ctrl_->send_json(proto::VIDEO_STATS, buf);
+      if (++stats_log_ % 5 == 0 || s.dropped)
+        fprintf(stderr,
+                "video: %u decoded, %u shown, %u dropped, receive-to-screen %.1f ms (per tile: decode %.1f, "
+                "copy %.1f; then wait %.1f, upload+draw %.1f, swap %.1f, flip %.1f)\n",
+                s.decoded, s.shown, s.dropped, s.present_ms, s.decode_ms, s.copy_ms, s.wait_ms, s.upload_ms,
+                s.swap_ms, s.flip_ms);
     }
   }
 
@@ -328,6 +375,7 @@ class Daemon {
   void end_session(const char* reason) {
     if (!ctrl_) return;
     if (reason) bye(*ctrl_, reason);
+    stop_video();
     ctrl_.reset();
     video_.reset();
     session_.clear();
@@ -355,7 +403,10 @@ class Daemon {
   std::string session_;
   json config_;
   bool warned_[256] = {};
-  uint64_t video_frames_ = 0, video_bytes_ = 0;
+  std::unique_ptr<Video> video_dec_;
+  int kf_efd_ = -1;
+  uint64_t last_kf_request_us_ = 0;
+  unsigned stats_log_ = 0;
 };
 
 }  // namespace
