@@ -4,6 +4,12 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-27, MacBook session (pushed and released as v0.7.1)
+
+Pulled up to `4826947`, pushed `main` to `origin`, tagged **`v0.7.1`**. Tags `v0.6` and `v0.7` already existed (they follow the MacBook app's version, which is still 0.7), so not `v0.1`. The release is built by the pipeline from this tag; if the image build fails on the new `libsystemd` dependency I fix `linux/iso/` and tag again.
+
+---
+
 ## 2026-11-26, iMac session (request: push and release)
 
 **The user asked for a push and a release.** The iMac's copy has no GitHub remote and no credentials, so please do it from the MacBook:
