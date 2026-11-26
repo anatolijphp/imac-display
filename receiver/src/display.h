@@ -94,7 +94,10 @@ class Display {
   std::vector<int16_t> noise_;       // dither tile, 128 x 128, -256..256 (= -1..1 step)
   std::vector<std::pair<int, int>> spans_;  // per row [x0, x1) where base_ is not transparent
   uint64_t start_us_ = 0;
-  std::vector<uint32_t> dots_bg_;    // the dots' rectangle as last composed (the dots are drawn on a copy)
+  std::vector<uint32_t> dots_bg_;    // the dots' rectangle as last composed, without the dots
+  cairo_surface_t* dots_layer_ = nullptr;  // the dots alone (ARGB), drawn every frame
+  void draw_dots();
+  void blend_dots_row(int r, uint32_t* px);  // dots row r over px (dots_w_ pixels)
   bool force_frame_ = true;          // content changed: compose the whole screen at the next animate()
   bool has_status_ = false;
   Status status_;

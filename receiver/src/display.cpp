@@ -333,6 +333,8 @@ void Display::close() {
   fd_ = -1;
   if (base_) cairo_surface_destroy(base_);
   base_ = nullptr;
+  if (dots_layer_) cairo_surface_destroy(dots_layer_);
+  dots_layer_ = nullptr;
 
   delete (drmModeModeInfo*)mode_;
   mode_ = nullptr;
@@ -377,6 +379,13 @@ void Display::render_base(const Status& st) {
   dots_h_ = dot_r_ * 2 + 4;
   dots_x_ = int(cx - dots_w_ / 2.0);
   dots_y_ = int(ty + 150 * s);
+  if (!dots_layer_ || cairo_image_surface_get_width(dots_layer_) != dots_w_ ||
+      cairo_image_surface_get_height(dots_layer_) != dots_h_) {
+    if (dots_layer_) cairo_surface_destroy(dots_layer_);
+    dots_layer_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, dots_w_, dots_h_);
+  }
+  dots_bg_.assign(size_t(dots_w_) * dots_h_, 0);
+  draw_dots();
 
   if (!st.footer.empty()) {
     cairo_set_source_rgb(cr, 0.35, 0.35, 0.37);
@@ -701,8 +710,46 @@ void Display::compose_rows(uint8_t* dst, int pitch, int y0, int y1) {
       }
       out[x] = r;
     }
+    // The dots go into the row before it is written, so they are never missing from the panel.
+    if (dots_layer_ && y >= dots_y_ && y < dots_y_ + dots_h_) {
+      int r = y - dots_y_;
+      memcpy(&dots_bg_[size_t(r) * dots_w_], &out[dots_x_], size_t(dots_w_) * 4);
+      blend_dots_row(r, &out[dots_x_]);
+    }
     memcpy(dst + size_t(y) * pitch, out.data(), size_t(w_) * 4);
   }
+}
+
+void Display::blend_dots_row(int r, uint32_t* px) {
+  if (dialog_ != Dialog::None) return;  // no dots under a dialog
+  const uint8_t* src = cairo_image_surface_get_data(dots_layer_);
+  const uint32_t* drow = (const uint32_t*)(src + size_t(r) * cairo_image_surface_get_stride(dots_layer_));
+  for (int x = 0; x < dots_w_; x++) {
+    uint32_t c = drow[x], a = c >> 24;
+    if (!a) continue;
+    uint32_t b = px[x], inv = 255 - a, o = 0;
+    for (int sh = 0; sh <= 16; sh += 8)
+      o |= std::min<uint32_t>(((c >> sh) & 0xFF) + (((b >> sh) & 0xFF) * inv + 127) / 255, 255) << sh;
+    px[x] = o;
+  }
+}
+
+void Display::draw_dots() {
+  if (!dots_layer_) return;
+  cairo_t* cr = cairo_create(dots_layer_);
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+  double t = frame_ / 15.0;  // seconds at 15 fps
+  for (int i = 0; i < 3; i++) {
+    double phase = t * 2 * M_PI / 1.4 - i * 0.9;  // one wave every 1.4 s, left to right
+    double a = 0.25 + 0.75 * (0.5 + 0.5 * std::sin(phase));
+    cairo_set_source_rgba(cr, 1, 1, 1, a);
+    cairo_arc(cr, dots_w_ / 2.0 + (i - 1) * dot_r_ * 4, dots_h_ / 2.0, dot_r_, 0, 2 * M_PI);
+    cairo_fill(cr);
+  }
+  cairo_destroy(cr);
+  cairo_surface_flush(dots_layer_);
 }
 
 void Display::compose(uint8_t* dst, int pitch) {
@@ -773,42 +820,21 @@ void Display::show(const Status& s) {
 void Display::animate() {
   if (fd_ < 0 || !has_status_ || paused_) return;
   frame_++;
-  // The whole screen (drifting background and content) 3 times a second: the shadows move a fraction
-  // of a grey level per step, and composing 3840x2160 costs ~65 ms of CPU. The dots, 15 times a second,
-  // are drawn on a saved copy of their rectangle.
+  draw_dots();
+  // The whole screen (drifting background, content, dots) 3 times a second: the shadows move a
+  // fraction of a grey level per step. In between only the dots' rectangle, from the background saved
+  // at the last full frame: written in one pass, never a frame without the dots.
   if (force_frame_ || frame_ % 5 == 0) {
     force_frame_ = false;
     frame();
-    dots_bg_.resize(size_t(dots_w_) * dots_h_);
-    for (int r = 0; r < dots_h_; r++)
-      memcpy(&dots_bg_[size_t(r) * dots_w_], map_ + (dots_y_ + r) * pitch_ + dots_x_ * 4, dots_w_ * 4);
-  }
-  if (dialog_ != Dialog::None) { drmModeDirtyFB(fd_, fb_id_, nullptr, 0); return; }
-  cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_RGB24, dots_w_, dots_h_);
-  {
-    cairo_surface_flush(tmp);
-    uint8_t* d = cairo_image_surface_get_data(tmp);
-    int ds = cairo_image_surface_get_stride(tmp);
-    for (int r = 0; r < dots_h_; r++) memcpy(d + r * ds, &dots_bg_[size_t(r) * dots_w_], dots_w_ * 4);
-    cairo_surface_mark_dirty(tmp);
-  }
-  cairo_t* cr = cairo_create(tmp);
-  {
-    double t = frame_ / 15.0;  // seconds at 15 fps
-    for (int i = 0; i < 3; i++) {
-      double phase = t * 2 * M_PI / 1.4 - i * 0.9;  // one wave every 1.4 s, left to right
-      double a = 0.25 + 0.75 * (0.5 + 0.5 * std::sin(phase));
-      cairo_set_source_rgba(cr, 1, 1, 1, a);
-      cairo_arc(cr, dots_w_ / 2.0 + (i - 1) * dot_r_ * 4, dots_h_ / 2.0, dot_r_, 0, 2 * M_PI);
-      cairo_fill(cr);
+  } else if (dialog_ == Dialog::None) {
+    std::vector<uint32_t> row(dots_w_);
+    for (int r = 0; r < dots_h_; r++) {
+      memcpy(row.data(), &dots_bg_[size_t(r) * dots_w_], size_t(dots_w_) * 4);
+      blend_dots_row(r, row.data());
+      memcpy(map_ + size_t(dots_y_ + r) * pitch_ + size_t(dots_x_) * 4, row.data(), size_t(dots_w_) * 4);
     }
   }
-  cairo_destroy(cr);
-  cairo_surface_flush(tmp);
-  const uint8_t* src = cairo_image_surface_get_data(tmp);
-  int stride = cairo_image_surface_get_stride(tmp);
-  for (int r = 0; r < dots_h_; r++) memcpy(map_ + (dots_y_ + r) * pitch_ + dots_x_ * 4, src + r * stride, dots_w_ * 4);
-  cairo_surface_destroy(tmp);
   drmModeDirtyFB(fd_, fb_id_, nullptr, 0);
 }
 
