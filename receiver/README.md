@@ -54,8 +54,8 @@ It retries every second until the interface exists, so it can start before the c
 - `STORAGE_EJECT` unmounts, then powers the disk off (`/sys/block/sdX/device/delete`) once none of its
   partitions is still mounted, then answers `STORAGE_DETACHED`. A pulled drive is lazily unmounted and
   reported as `STORAGE_DETACHED` too. After an eject the drive has to be replugged to appear again.
-- Known gap: if the receiver is killed with SIGKILL, `smbd` and the mounts stay until the next start
-  of the receiver does not clean them up yet.
+- Known gap: if the receiver is killed with SIGKILL, `smbd` keeps running and the drives stay mounted;
+  the next start of the receiver does not clean them up yet.
 
 ## Test without the MacBook
 
