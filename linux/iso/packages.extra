@@ -31,6 +31,8 @@ nss-mdns
 libevdev
 nlohmann-json
 samba
+# Boot splash in the waiting screen's look (theme and initramfs hook come from linux/rootfs/)
+plymouth
 
 # Comfort
 tmux

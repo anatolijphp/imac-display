@@ -309,7 +309,13 @@ initrd  /initramfs-linux.img
 options $3
 EOF
 }
-write_entry imac-display.conf        "iMac Display (Arch Linux)" "$BASE_OPTS$EXTRA"
+# The normal start shows the boot splash (plymouth, in the waiting screen's look) instead of boot
+# text. The other entries stay verbose: they are the way in when something is wrong.
+SPLASH=""
+if [ "$RECEIVER" = 1 ] && [ -x "$T/usr/bin/plymouth" ]; then
+  SPLASH=" quiet splash loglevel=3 rd.udev.log_level=3 systemd.show_status=auto vt.global_cursor_default=0"
+fi
+write_entry imac-display.conf        "iMac Display (Arch Linux)" "$BASE_OPTS$EXTRA$SPLASH"
 write_entry imac-display-oldgpu.conf "iMac Display, older Radeon GPU (R9 M380 or M390)" \
   "$BASE_OPTS amdgpu.si_support=1 radeon.si_support=0 amdgpu.cik_support=1 radeon.cik_support=0"
 write_entry imac-display-safe.conf   "iMac Display, safe graphics (if the screen stays black)" "$BASE_OPTS nomodeset"
