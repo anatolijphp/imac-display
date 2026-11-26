@@ -5,11 +5,14 @@ Documentation=file:///root/imac-display/receiver/README.md
 # (boot menu: console only) and the receiver stays off; the auto-login console on tty1 runs instead.
 ConditionKernelCommandLine=!nomodeset
 ConditionKernelCommandLine=!imacdisplay.noreceiver
-After=systemd-udevd.service systemd-user-sessions.service
+After=systemd-udevd.service systemd-user-sessions.service plymouth-start.service
 StartLimitIntervalSec=0
 
 [Service]
 EnvironmentFile=-/etc/imacdisplayd.conf
+# The boot splash steps aside but leaves its picture up until the waiting screen replaces it (same
+# look, so there is no flash). Without Plymouth running this does nothing.
+ExecStartPre=-/usr/bin/plymouth quit --retain-splash
 ExecStart=/usr/local/bin/imacdisplayd $IMACDISPLAYD_ARGS
 Restart=always
 RestartSec=2

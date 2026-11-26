@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=iMac Display
+Description=The waiting screen's look while the iMac starts
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/imac-display
+ScriptFile=/usr/share/plymouth/themes/imac-display/imac-display.script

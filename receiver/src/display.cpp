@@ -283,21 +283,7 @@ bool Display::open() {
   }
   // If we run on a VT (systemd TTYPath), switch it to graphics mode: the text console stops drawing.
   if (isatty(0) && ioctl(0, KDSETMODE, KD_GRAPHICS) == 0) tty_ = 0;
-  base_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w_, h_);
-  fw_ = (w_ + kCell - 1) / kCell;
-  fh_ = (h_ + kCell - 1) / kCell;
-  for (auto& f : field_) f.assign(size_t(fw_ + 2) * (fh_ + 2), 0);
-  noise_.resize(128 * 128);
-  uint32_t seed = 0x9e3779b9u;
-  auto rnd = [&seed]() {  // xorshift32 -> 0..255
-    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-    return int(seed >> 24);
-  };
-  for (auto& n : noise_) n = int16_t(rnd() + rnd() - 255);  // triangular, about -1..1 step
-  spans_.assign(h_, {0, 0});
-  timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  start_us_ = uint64_t(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+  init_canvas();
   px_ = w_ / 2.0;
   py_ = h_ * 0.62;
   dialog_ = Dialog::None;
@@ -1441,4 +1427,92 @@ void Display::gl_frame() {
       gbm_surface_release_buffer((gbm_surface*)gs_, bo);
     }
   }
+}
+
+void Display::init_canvas() {
+  base_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w_, h_);
+  fw_ = (w_ + kCell - 1) / kCell;
+  fh_ = (h_ + kCell - 1) / kCell;
+  for (auto& f : field_) f.assign(size_t(fw_ + 2) * (fh_ + 2), 0);
+  noise_.resize(128 * 128);
+  uint32_t seed = 0x9e3779b9u;
+  auto rnd = [&seed]() {  // xorshift32 -> 0..255
+    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+    return int(seed >> 24);
+  };
+  for (auto& n : noise_) n = int16_t(rnd() + rnd() - 255);  // triangular, about -1..1 step
+  spans_.assign(h_, {0, 0});
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  start_us_ = uint64_t(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
+}
+
+bool Display::render_splash(const std::string& dir, int w, int h) {
+  w_ = w;
+  h_ = h;
+  init_canvas();
+  const double s = h_ / 2160.0, cx = w_ / 2.0, icon_cy = h_ * 0.40;
+  cairo_t* cr = cairo_create(base_);
+  draw_laptop(cr, cx, icon_cy, s, false);
+  cairo_destroy(cr);
+  cairo_surface_flush(base_);
+  content_spans();
+  update_field(0.0);  // the shadows where the waiting screen starts them
+  cairo_surface_t* img = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w_, h_);
+  cairo_surface_flush(img);
+  compose(cairo_image_surface_get_data(img), cairo_image_surface_get_stride(img));
+  cairo_surface_mark_dirty(img);
+  bool ok = cairo_surface_write_to_png(img, (dir + "/splash.png").c_str()) == CAIRO_STATUS_SUCCESS;
+  cairo_surface_destroy(img);
+
+  // The dots: same size and place as on the waiting screen (render_base), animated by the script.
+  const double ty = icon_cy + 360 * s;
+  const int r = int(9 * s), dy = int(ty + 150 * s) + r + 2;
+  const int d = 2 * r + 4;
+  cairo_surface_t* dot = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, d, d);
+  cr = cairo_create(dot);
+  cairo_set_source_rgb(cr, 1, 1, 1);
+  cairo_arc(cr, d / 2.0, d / 2.0, r, 0, 2 * M_PI);
+  cairo_fill(cr);
+  cairo_destroy(cr);
+  ok = ok && cairo_surface_write_to_png(dot, (dir + "/dot.png").c_str()) == CAIRO_STATUS_SUCCESS;
+  cairo_surface_destroy(dot);
+
+  FILE* f = fopen((dir + "/imac-display.script").c_str(), "w");
+  if (!f) return false;
+  fprintf(f,
+          "# Written by imacdisplayd --render-splash: the waiting screen's look while the iMac starts.\n"
+          "Window.SetBackgroundTopColor(0.03, 0.03, 0.04);\n"
+          "Window.SetBackgroundBottomColor(0.03, 0.03, 0.04);\n"
+          "sw = Window.GetWidth(); sh = Window.GetHeight();\n"
+          "k = sh / %d;\n"
+          "bg = Sprite(Image(\"splash.png\").Scale(sw, sh)); bg.SetPosition(0, 0, -10);\n"
+          "dot = Image(\"dot.png\"); dot = dot.Scale(dot.GetWidth() * k, dot.GetHeight() * k);\n"
+          "for (i = 0; i < 3; i++) {\n"
+          "  d[i] = Sprite(dot);\n"
+          "  d[i].SetPosition(sw / 2 + (i - 1) * %d * k - dot.GetWidth() / 2, %d * k - dot.GetHeight() / 2, 1);\n"
+          "}\n"
+          "t = 0;\n"
+          "fun refresh() {\n"
+          "  t++;  # 50 per second\n"
+          "  for (i = 0; i < 3; i++) {\n"
+          "    a = 0.25 + 0.75 * (0.5 + 0.5 * Math.Sin(t / 50 * 2 * 3.14159 / 1.4 - i * 0.9));\n"
+          "    d[i].SetOpacity(a);\n"
+          "  }\n"
+          "}\n"
+          "Plymouth.SetRefreshFunction(refresh);\n",
+          h_, 4 * r, dy);
+  fclose(f);
+  f = fopen((dir + "/imac-display.plymouth").c_str(), "w");
+  if (!f) return false;
+  fprintf(f,
+          "[Plymouth Theme]\n"
+          "Name=iMac Display\n"
+          "Description=The waiting screen's look while the iMac starts\n"
+          "ModuleName=script\n\n"
+          "[script]\n"
+          "ImageDir=/usr/share/plymouth/themes/imac-display\n"
+          "ScriptFile=/usr/share/plymouth/themes/imac-display/imac-display.script\n");
+  fclose(f);
+  return ok;
 }

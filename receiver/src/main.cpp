@@ -688,6 +688,12 @@ int main(int argc, char** argv) {
     else if (a == "--no-display") o.display = false;
     else if (a == "--screenshot" && i + 1 < argc) o.screenshot = argv[++i];
     else if (a == "--snapshots" && i + 1 < argc) o.snapshots = argv[++i];
+    else if (a == "--render-splash" && i + 1 < argc) {  // write the boot splash theme and exit
+      std::string dir = argv[++i];
+      bool ok = Display().render_splash(dir, 3840, 2160);
+      fprintf(stderr, "splash: %s %s\n", dir.c_str(), ok ? "written" : "failed");
+      return ok ? 0 : 1;
+    }
     else {
       fprintf(stderr,
               "usage: imacdisplayd [--iface IFACE] [--port PORT]\n"

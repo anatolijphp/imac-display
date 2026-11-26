@@ -34,6 +34,9 @@ class Display {
   void show(const Status& s);  // full redraw when something changed
   void animate();              // next frame (drifting background, dots); call 30 times a second
   bool save_png(const std::string& path) const;  // the current picture, for checking without looking
+  // The boot splash (a Plymouth "script" theme) in the waiting screen's look: background and icon as
+  // splash.png, dot.png, and the script that animates the dots. No screen needed.
+  bool render_splash(const std::string& dir, int w, int h);
   void set_snapshot_dir(const std::string& d) { snap_dir_ = d; }  // testing: every redraw saved as NNN.png
 
   // Video borrows the panel: pause() stops drawing, target() describes the panel, resume() puts the
@@ -74,6 +77,7 @@ class Display {
     double x = 0, y = 0, w = 0, h = 0;
     bool in(double px, double py) const { return px >= x && px < x + w && py >= y && py < y + h; }
   };
+  void init_canvas();  // base_, the background field and dither tile, for w_ x h_
   void render_base(const Status& s);
   void redraw();  // the current status again, after a hover or dialog change
   Hit hit_test() const;

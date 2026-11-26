@@ -1,0 +1,20 @@
+# Written by imacdisplayd --render-splash: the waiting screen's look while the iMac starts.
+Window.SetBackgroundTopColor(0.03, 0.03, 0.04);
+Window.SetBackgroundBottomColor(0.03, 0.03, 0.04);
+sw = Window.GetWidth(); sh = Window.GetHeight();
+k = sh / 2160;
+bg = Sprite(Image("splash.png").Scale(sw, sh)); bg.SetPosition(0, 0, -10);
+dot = Image("dot.png"); dot = dot.Scale(dot.GetWidth() * k, dot.GetHeight() * k);
+for (i = 0; i < 3; i++) {
+  d[i] = Sprite(dot);
+  d[i].SetPosition(sw / 2 + (i - 1) * 36 * k - dot.GetWidth() / 2, 1385 * k - dot.GetHeight() / 2, 1);
+}
+t = 0;
+fun refresh() {
+  t++;  # 50 per second
+  for (i = 0; i < 3; i++) {
+    a = 0.25 + 0.75 * (0.5 + 0.5 * Math.Sin(t / 50 * 2 * 3.14159 / 1.4 - i * 0.9));
+    d[i].SetOpacity(a);
+  }
+}
+Plymouth.SetRefreshFunction(refresh);
