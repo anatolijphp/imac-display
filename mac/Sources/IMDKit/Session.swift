@@ -13,7 +13,8 @@ public final class Session {
     /// Called once when the session ends, with the reason.
     public var onEnd: ((String) -> Void)?
 
-    private let host: String
+    /// The name or address this session is connected to.
+    public let host: String
     private let port: UInt16
     private var early: [(FrameHeader, Data)] = []   // messages that arrived before CONFIG_ACK
     private var ended = false

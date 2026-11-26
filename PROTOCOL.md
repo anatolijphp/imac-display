@@ -102,6 +102,8 @@ Streams are H.264 High profile, 4:2:0, 8 bit, BT.709 video range, with no B-fram
 
 Audio is uncompressed. The receiver keeps a jitter buffer of 20 to 40 ms.
 
+`AUDIO_OUT` is sent only when the iMac's `HELLO` has `"audio":{"out":true}`. It is then sent all the time the session is up, silence included: 100 messages per second, each exactly 10 ms (480 frames, 1920 bytes at 48 kHz stereo `s16le`). `pts_us` is the MacBook's clock when the message was sent, not a playback time.
+
 ### Input (ctrl, iMac → MacBook)
 
 | Type | Name | Payload (bytes) |

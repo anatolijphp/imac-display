@@ -35,9 +35,12 @@ usage: imd <command> [options]
   pipeline  [--points WxH] [--lodpi] [--capture WxH] [--cols N --rows N] [--mbps M] [--seconds N]
             [--no-low-latency] [--codec hevc] [--speed] [--serial-tiles] [--capture-fps N] [--queue-depth N]
             [--no-scene] [--out PREFIX] [--host NAME [--port P]]
+            [--no-input] [--no-storage] [--no-audio] [--audio] [--pointer-speed X] [--quiet]
       Virtual display → test content → screen capture → H.264 encode, with timings.
       --cols/--rows cut the picture into tiles, one encoder each (2x2 for native 5K).
-      --out writes PREFIX.tileN.h264. --host also sends the stream to an iMac (PROTOCOL.md).
+      --out writes PREFIX.tileN.h264. --host also sends the stream to an iMac (PROTOCOL.md);
+      the iMac's keyboard and mouse then control this Mac and its USB drives are mounted here.
+      --seconds 0 runs until Ctrl-C.
 
   hello     --host NAME [--port P] [--seconds N]
       Open a session with the iMac without video and print what it sends.
@@ -144,10 +147,36 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
     var session: Session?
     let keyframeWanted = Flag()
     let sentSinceStats = Counter()
+    let quiet = o.flags.contains("quiet")
+    var injector: InputInjector?
+    var mounter: StorageMounter?
+    let ended = Flag()
     if let host = o.values["host"] {
         let s = try Session(host: host, port: UInt16(o.int("port", Int(Wire.port))), name: Host.current().localizedName ?? "Mac")
         print("iMac at \(s.ctrl.peer): \(String(data: try JSONSerialization.data(withJSONObject: s.imacHello, options: [.sortedKeys]), encoding: .utf8) ?? "")")
+        if !o.flags.contains("no-input") {
+            if !InputInjector.hasPermission {
+                InputInjector.requestPermission()
+                print("WARNING: no Accessibility permission yet, so the iMac's keyboard and mouse will do nothing. Allow this program (or the terminal it runs in) in System Settings > Privacy & Security > Accessibility, then start again.")
+            }
+            injector = InputInjector()
+            injector?.pointerSpeed = o.double("pointer-speed", 1.0)
+        }
+        if !o.flags.contains("no-storage") {
+            mounter = StorageMounter(host: s.host, sendEject: { [weak s] id in try? s?.ctrl.sendJSON(.storageEject, ["id": id]) },
+                                     log: { print("storage: \($0)") })
+        }
         s.onMessage = { h, p in
+            let type = MsgType(rawValue: h.type)
+            if type == .inputKey || type == .inputPointerRel || type == .inputButton, let injector {
+                injector.handle(type: type!, payload: p)
+                return
+            }
+            if type == .storageAttached || type == .storageDetached, let mounter,
+               let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] {
+                if type == .storageAttached { mounter.attached(j) } else { mounter.detached(j) }
+                return
+            }
             if h.type == MsgType.videoRequestKeyframe.rawValue { keyframeWanted.set() }
             if h.type == MsgType.videoStats.rawValue, let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] {
                 // Once a second: what the iMac did with what we sent.
@@ -156,12 +185,12 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
                 var line = "iMac: decoded \(decoded), dropped \(j["dropped"] ?? "?"), decode \(j["decode_ms"] ?? "?") ms, to screen \(j["present_ms"] ?? "?") ms | sent \(sent)"
                 // Safety net: we are sending and the iMac shows nothing, so its decoder has lost its place.
                 if decoded == 0 && sent > 0 { keyframeWanted.set(); line += "  → sending a keyframe unasked" }
-                print(line)
+                if !quiet || (decoded == 0 && sent > 0) { print(line) }
                 return
             }
             print("← " + describe(h, p))
         }
-        s.onEnd = { print("session ended: \($0)") }
+        s.onEnd = { print("session ended: \($0)"); ended.set() }
         try s.configure(videoConfig(width: cw, height: ch, tiles: tiles))
         try s.openVideo()
         s.start()
@@ -225,18 +254,53 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
             encoders[0].encode(pb, ptsUs: now, forceKeyframe: key)
         }
     }
-    try await capture.start(displayID: vd.displayID, width: cw, height: ch, fps: o.int("capture-fps", fps), queueDepth: o.int("queue-depth", 3))
-    try await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+    // Sound: everything this Mac plays goes to the iMac as AUDIO_OUT, 10 ms (480 frames, 1920 bytes) per message.
+    let imacPlaysSound = ((session?.imacHello["audio"] as? [String: Any])?["out"] as? Bool) == true
+    let sendAudio = session != nil && !o.flags.contains("no-audio") && (imacPlaysSound || o.flags.contains("audio"))
+    var audioPending = Data()
+    let audioMessages = Counter()
+    if sendAudio {
+        capture.onAudio = { pcm in   // always called on the same queue
+            audioPending.append(pcm)
+            while audioPending.count >= 1920 {
+                try? session?.ctrl.send(.audioOut, payload: audioPending.prefix(1920))
+                audioPending.removeFirst(1920)
+                audioMessages.add()
+            }
+        }
+    } else if session != nil && !imacPlaysSound {
+        print("sound: the iMac says it cannot play sound yet (HELLO audio.out is false), so none is sent")
+    }
+    try await capture.start(displayID: vd.displayID, width: cw, height: ch, fps: o.int("capture-fps", fps), queueDepth: o.int("queue-depth", 3),
+                            audio: sendAudio)
+    // Runs for --seconds (0 = until Ctrl-C, or until the session ends).
+    signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
+    let sources = [SIGINT, SIGTERM].map { sig -> DispatchSourceSignal in
+        let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+        src.setEventHandler { ended.set() }
+        src.resume()
+        return src
+    }
+    let started = Date()
+    while !ended.peek() && (seconds <= 0 || Date().timeIntervalSince(started) < seconds) {
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
+    sources.forEach { $0.cancel() }
+    let ran = Date().timeIntervalSince(started)
     await capture.stop()
     encoders.forEach { $0.flush() }
     ioQueue.sync {}
+    injector?.releaseAll()
+    mounter?.unmountAll()
+    if sendAudio { print(String(format: "sound sent to the iMac: %d messages of 10 ms = %.1f s (captured %.1f s)", audioMessages.take(), Double(capture.audioFrames) / 48000 - Double(audioPending.count) / 4 / 48000, Double(capture.audioFrames) / 48000)) }
+    if let injector { print("input from the iMac: \(injector.keys) key events, \(injector.moves) pointer moves, \(injector.clicks) button events") }
     session?.close()
     files.forEach { try? $0.close() }
     scene?.close()
 
     let bytes = keyBytes.sum + deltaBytes.sum
-    print(String(format: "pictures: %d new in %.1f s = %.1f per second (%d idle, %d other)", capture.completeFrames, seconds,
-                 Double(capture.completeFrames) / seconds, capture.idleFrames, capture.otherFrames))
+    print(String(format: "pictures: %d new in %.1f s = %.1f per second (%d idle, %d other)", capture.completeFrames, ran,
+                 Double(capture.completeFrames) / ran, capture.idleFrames, capture.otherFrames))
     print("time between pictures, ms (p50 / p95 / max): \(intervalMs.summary)")
     print("capture delay, screen refresh to our callback, ms: \(lagMs.summary)")
     if splitter != nil { print("cutting into tiles, ms: \(splitMs.summary)") }
@@ -245,7 +309,7 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
     print("callback to all tiles encoded, ms: \(totalMs.summary)")
     if session != nil { print("writing one picture to the socket, ms: \(sendMs.summary)") }
     print(String(format: "bitrate: %.1f Mbit/s; keyframes %d (largest %.0f kB), other frames %d (median %.1f kB, largest %.0f kB); encoder failures %d",
-                 bytes * 8 / seconds / 1e6, keyBytes.count, keyBytes.percentile(100) / 1000, deltaBytes.count,
+                 bytes * 8 / ran / 1e6, keyBytes.count, keyBytes.percentile(100) / 1000, deltaBytes.count,
                  deltaBytes.percentile(50) / 1000, deltaBytes.percentile(100) / 1000, encoders.reduce(0) { $0 + $1.failures }))
 }
 
@@ -263,6 +327,7 @@ final class Flag {
     private let lock = NSLock()
     func set() { lock.lock(); value = true; lock.unlock() }
     func take() -> Bool { lock.lock(); defer { value = false; lock.unlock() }; return value }
+    func peek() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 /// Gathers the encoded tiles of one picture (same pts) and returns them in tile order once all are there.

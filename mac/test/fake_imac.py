@@ -11,7 +11,7 @@ import argparse, json, os, socket, struct, threading, time
 
 HELLO, CONFIG, CONFIG_ACK, PING, PONG, BYE = 1, 2, 3, 4, 5, 6
 VIDEO_FRAME, VIDEO_REQUEST_KEYFRAME = 0x10, 0x11
-INPUT_KEY, STORAGE_ATTACHED = 0x30, 0x40
+AUDIO_OUT, INPUT_KEY, STORAGE_ATTACHED = 0x20, 0x30, 0x40
 lock = threading.Lock()
 
 
@@ -44,11 +44,13 @@ def recv(sock):
 def ctrl(sock, args):
     send(sock, HELLO, {"proto": 0, "role": "imac", "panel": {"w": 5120, "h": 2880, "hz": 60},
                        "decode": {"codecs": ["h264"], "max_w": 3840, "max_h": 2160, "max_tiles": 4, "hw": False},
-                       "audio": {"out": False, "in": False}, "features": ["input", "storage"]})
+                       "audio": {"out": True, "in": False}, "features": ["input", "storage"]})
     send(sock, STORAGE_ATTACHED, {"id": "fake-1", "label": "FAKE", "fs": "exfat", "size": 1 << 30, "read_only": True,
                                   "share": "usb-fake-1", "user": "imac", "password": "not-a-real-share"})
     started = time.time()
     asked = False
+    audio_file = open(os.path.join(args.out, "audio.s16le"), "wb") if args.out else None
+    audio_msgs = audio_bad = 0
     sock.settimeout(1.0)
     while True:
         try:
@@ -58,11 +60,21 @@ def ctrl(sock, args):
         if mtype == CONFIG:
             print("ctrl: CONFIG", payload.decode())
             send(sock, CONFIG_ACK, {"ok": True})
-            send(sock, INPUT_KEY, struct.pack("<HHB3x", 0x07, 0x04, 1))   # the A key, down
+            # Left Shift down and up: an input event that types nothing into whatever window has the focus.
+            send(sock, INPUT_KEY, struct.pack("<HHB3x", 0x07, 0xE1, 1))
+            send(sock, INPUT_KEY, struct.pack("<HHB3x", 0x07, 0xE1, 0))
         elif mtype == PING:
             send(sock, PONG, payload)
+        elif mtype == AUDIO_OUT:
+            audio_msgs += 1
+            audio_bad += len(payload) != 1920   # 10 ms of 48 kHz stereo s16le
+            if audio_file:
+                audio_file.write(payload)
         elif mtype == BYE:
             print("ctrl: BYE", payload.decode())
+            print(f"audio: {audio_msgs} messages ({audio_msgs / 100:.1f} s), {audio_bad} with the wrong size")
+            if audio_file:
+                audio_file.close()
             return
         elif mtype is not None and mtype != PONG:
             print(f"ctrl: type 0x{mtype:02x}, {len(payload)} bytes")

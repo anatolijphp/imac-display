@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         // Declarations for Apple's private virtual-display classes (they live in CoreGraphics).
         .target(name: "CVirtualDisplay", linkerSettings: [.linkedFramework("CoreGraphics")]),
-        .target(name: "IMDKit", dependencies: ["CVirtualDisplay"]),
+        .target(name: "IMDKit", dependencies: ["CVirtualDisplay"], linkerSettings: [.linkedFramework("NetFS")]),
         .executableTarget(name: "imd", dependencies: ["IMDKit"]),
     ]
 )
