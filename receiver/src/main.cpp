@@ -41,6 +41,7 @@ struct Options {
   std::string iface = "thunderbolt0";
   uint16_t port = proto::kPort;
   bool storage_read_only = false;
+  bool share_macos = true;
 };
 
 class Daemon {
@@ -48,7 +49,7 @@ class Daemon {
   explicit Daemon(Options o)
       : opt_(std::move(o)),
         input_([this](uint8_t t, const void* p, size_t n) { send_ctrl(t, p, n); }),
-        storage_({opt_.iface, opt_.storage_read_only},
+        storage_({opt_.iface, opt_.storage_read_only, opt_.share_macos},
                  [this](uint8_t t, const std::string& j) { send_ctrl(t, j.data(), j.size()); }) {
     timer_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     itimerspec its{{1, 0}, {1, 0}};
@@ -300,12 +301,14 @@ int main(int argc, char** argv) {
     if (a == "--iface" && i + 1 < argc) o.iface = argv[++i];
     else if (a == "--port" && i + 1 < argc) o.port = std::stoi(argv[++i]);
     else if (a == "--storage-read-only") o.storage_read_only = true;
+    else if (a == "--no-macos-share") o.share_macos = false;
     else {
       fprintf(stderr,
               "usage: imacdisplayd [--iface IFACE] [--port PORT]\n"
               "  --iface  network interface to accept connections on (default thunderbolt0;\n"
               "           anything else is for testing only)\n"
-              "  --storage-read-only  mount USB drives read-only (testing)\n");
+              "  --storage-read-only  mount USB drives read-only (testing)\n"
+              "  --no-macos-share     do not offer the iMac's own macOS Data volume (read-only by default)\n");
       return 2;
     }
   }

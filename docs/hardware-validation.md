@@ -89,3 +89,7 @@ Test clips (10 s, 600 frames, 60 fps) were made with libx264 and are under `/roo
   - iMac → MacBook (`-R`): **88.2 Mbit/s**, 0 retransmits (per-second values 65–108)
 - Good enough for one 1080p H.264 stream at 10–20 Mbit/s. Latency spikes of up to ~75 ms are to be expected.
 
+### macOS partition, read-only (looked at, not written)
+
+2026-11-26. `apfsutil /dev/sda2` (apfs-fuse 66b86bd, read-only): one APFS container with volumes 0 Data "Mac - Data" (7.5 GB used), 1 Preboot, 2 Recovery, 3 VM, 4 System "Mac" (one OS-update snapshot), 5 Update. **FileVault: No** on all volumes. `apfs-fuse -v 0 -o ro /dev/sda2 …` mounts the Data volume read-only (kernel mount flags `ro`); one user folder. Read through Samba over loopback: 138 MB file at 376 MB/s.
+

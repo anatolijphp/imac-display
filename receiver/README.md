@@ -54,6 +54,14 @@ It retries every second until the interface exists, so it can start before the c
 - `STORAGE_EJECT` unmounts, then powers the disk off (`/sys/block/sdX/device/delete`) once none of its
   partitions is still mounted, then answers `STORAGE_DETACHED`. A pulled drive is lazily unmounted and
   reported as `STORAGE_DETACHED` too. After an eject the drive has to be replugged to appear again.
+- **The iMac's own macOS** (on by default, `--no-macos-share` turns it off): the APFS **Data** volume on the
+  internal disk is mounted **read-only** with `apfs-fuse` (built by `linux/apfs-fuse/build.sh`; it opens the
+  disk `O_RDONLY` and has no write operations) at `/run/imacdisplay/volumes/imac-macos` and offered as share
+  `imac-macos`, always `read_only: true`. FileVault-encrypted volumes are skipped (no passphrase support yet).
+  Eject from the MacBook only answers `STORAGE_DETACHED`; the internal disk is never unmounted mid-run or
+  powered off, and it is offered again in the next session. Read/write was considered and rejected by the
+  user on 2026-11-26: Linux APFS write support is experimental and the project never writes outside the
+  Linux partitions.
 - Known gap: if the receiver is killed with SIGKILL, `smbd` keeps running and the drives stay mounted;
   the next start of the receiver does not clean them up yet.
 

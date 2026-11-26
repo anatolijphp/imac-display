@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/mount.h>
+#include <sys/statvfs.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/wait.h>
@@ -19,6 +20,7 @@
 #include <nlohmann/json.hpp>
 #include <random>
 #include <set>
+#include <sstream>
 
 #include "protocol.h"
 
@@ -107,6 +109,44 @@ int run(const std::vector<std::string>& argv, const std::string& stdin_data = ""
   return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
+// Runs a program and returns its standard output (empty on failure).
+std::string capture(const std::vector<std::string>& argv) {
+  int pfd[2];
+  if (pipe2(pfd, O_CLOEXEC) < 0) return "";
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, pfd[1], 1);
+  std::vector<char*> av;
+  for (auto& a : argv) av.push_back(const_cast<char*>(a.c_str()));
+  av.push_back(nullptr);
+  pid_t pid;
+  int rc = posix_spawnp(&pid, av[0], &fa, nullptr, av.data(), environ);
+  posix_spawn_file_actions_destroy(&fa);
+  close(pfd[1]);
+  std::string out;
+  if (rc == 0) {
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(pfd[0], buf, sizeof buf)) > 0) out.append(buf, n);
+    int st;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+  }
+  close(pfd[0]);
+  return out;
+}
+
+bool is_mountpoint(const std::string& dir) {
+  std::ifstream mi("/proc/self/mountinfo");
+  std::string line;
+  while (std::getline(mi, line)) {
+    std::istringstream ls(line);
+    std::string a, b, c, d, mp;
+    ls >> a >> b >> c >> d >> mp;
+    if (mp == dir) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 Storage::Storage(Options o, Emit emit) : opt_(std::move(o)), emit_(std::move(emit)) {
@@ -129,6 +169,83 @@ Storage::Storage(Options o, Emit emit) : opt_(std::move(o)), emit_(std::move(emi
       consider(d);
       udev_device_unref(d);
     }
+  }
+  udev_enumerate_unref(en);
+
+  if (opt_.share_macos) mount_macos();
+}
+
+// The iMac's own macOS: the APFS Data volume (users' files) on the internal disk, mounted read-only with
+// apfs-fuse, which opens the disk O_RDONLY and has no write operations (see linux/apfs-fuse/build.sh).
+// Nothing on the internal disk outside the Linux partitions is ever written (CLAUDE.md).
+void Storage::mount_macos() {
+  udev_enumerate* en = udev_enumerate_new(udev_);
+  udev_enumerate_add_match_subsystem(en, "block");
+  udev_enumerate_add_match_property(en, "ID_FS_TYPE", "apfs");
+  udev_enumerate_scan_devices(en);
+  udev_list_entry* e;
+  int n = 0;
+  udev_list_entry_foreach(e, udev_enumerate_get_list_entry(en)) {
+    udev_device* d = udev_device_new_from_syspath(udev_, udev_list_entry_get_name(e));
+    if (!d) continue;
+    udev_device* disk = udev_device_get_parent_with_subsystem_devtype(d, "block", "disk");
+    std::string devnode = udev_device_get_devnode(d);
+    std::string disk_sys = disk ? udev_device_get_syspath(disk) : "";
+    std::string syspath = udev_device_get_syspath(d);
+    udev_device_unref(d);
+    if (disk_sys != root_disk_) continue;  // internal disk only; USB APFS drives are not supported
+
+    // apfsutil lists the volumes: "Volume N <uuid>", then "Role:", "Name:", "FileVault:" lines.
+    std::istringstream out(capture({"apfsutil", devnode}));
+    std::string line, vol, role, name, fv;
+    auto take = [&]() {
+      if (vol.empty() || role != "Data") return;
+      if (fv != "No") {
+        fprintf(stderr, "storage: macOS volume \"%s\" on %s is FileVault-encrypted, not shared\n", name.c_str(), devnode.c_str());
+        return;
+      }
+      Volume v;
+      v.id = n ? "imac-macos-" + std::to_string(n) : "imac-macos";
+      v.devnode = devnode;
+      v.syspath = syspath;
+      v.disk_syspath = disk_sys;
+      v.mountpoint = kVolumes + "/" + v.id;
+      v.share_path = v.mountpoint + "/root";  // apfs-fuse shows the volume's files under root/
+      v.share = v.id;
+      v.fs = "apfs";
+      v.read_only = true;
+      v.internal = true;
+      std::string nm = name.substr(0, name.find(" (Case"));
+      v.label = "iMac macOS (" + nm + ")";
+      mkdirs(v.mountpoint);
+      if (!is_mountpoint(v.mountpoint) &&
+          run({"apfs-fuse", "-v", vol, "-o", "ro", devnode, v.mountpoint}) != 0) {
+        fprintf(stderr, "storage: apfs-fuse could not mount volume %s of %s\n", vol.c_str(), devnode.c_str());
+        rmdir(v.mountpoint.c_str());
+        return;
+      }
+      struct statvfs sv;
+      if (statvfs(v.mountpoint.c_str(), &sv) == 0) v.size = uint64_t(sv.f_blocks) * sv.f_frsize;
+      fprintf(stderr, "storage: mounted macOS volume %s \"%s\" of %s read-only at %s\n", vol.c_str(), nm.c_str(),
+              devnode.c_str(), v.mountpoint.c_str());
+      vols_[v.id] = v;
+      n++;
+    };
+    while (std::getline(out, line)) {
+      if (line.rfind("Volume ", 0) == 0) {
+        take();
+        std::istringstream ls(line.substr(7));
+        ls >> vol;
+        role = name = fv = "";
+      } else if (line.rfind("Role:", 0) == 0) {
+        role = line.substr(line.find_first_not_of(' ', 5));
+      } else if (line.rfind("Name:", 0) == 0) {
+        name = line.substr(line.find_first_not_of(' ', 5));
+      } else if (line.rfind("FileVault:", 0) == 0) {
+        fv = line.substr(line.find_first_not_of(' ', 10));
+      }
+    }
+    take();
   }
   udev_enumerate_unref(en);
 }
@@ -188,6 +305,7 @@ void Storage::consider(udev_device* d) {
   else if (const char* s = udev_device_get_sysattr_value(d, "size")) v.size = strtoull(s, nullptr, 10) * 512;
   v.read_only = opt_.read_only || kReadOnly.count(fs);
   v.mountpoint = kVolumes + "/" + id;
+  v.share_path = v.mountpoint;
 
   if (!mount_volume(v)) return;
   vols_[v.id] = v;
@@ -266,6 +384,12 @@ void Storage::announce(const Volume& v) {
 void Storage::eject(const std::string& id) {
   auto it = vols_.find(id);
   if (it == vols_.end()) return;
+  if (it->second.internal) {
+    // The MacBook has unmounted the iMac's macOS volume. It stays mounted here (read-only) and is
+    // offered again in the next session. The internal disk is never unmounted or powered off.
+    emit_(proto::STORAGE_DETACHED, nlohmann::json{{"id", id}}.dump());
+    return;
+  }
   Volume v = it->second;
   vols_.erase(it);
   write_samba_config();
@@ -276,6 +400,7 @@ void Storage::eject(const std::string& id) {
 }
 
 void Storage::power_off_disk_if_unused(const std::string& disk_syspath) {
+  if (disk_syspath == root_disk_ || disk_syspath == boot_disk_) return;  // never the internal disk
   for (auto& [id, v] : vols_)
     if (v.disk_syspath == disk_syspath) return;
   // Only power off if none of its partitions is mounted by anyone else either.
@@ -322,7 +447,7 @@ void Storage::write_samba_config() {
   for (auto& [id, v] : vols_) {
     f << "\n[" << v.share << "]\n"
       << "  comment = " << v.label << "\n"
-      << "  path = " << v.mountpoint << "\n"
+      << "  path = " << v.share_path << "\n"
       << "  valid users = " << kShareUser << "\n"
       << "  force user = root\n"
       << "  read only = " << (v.read_only ? "yes" : "no") << "\n";

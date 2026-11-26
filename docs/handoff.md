@@ -24,6 +24,8 @@ High profile is fine. No B-frames, as already in the protocol.
 3. **Packages to add to the image:** see the list below.
 4. **Storage is implemented on the iMac side** (`receiver/README.md`, Storage). Tested with a real USB stick, read-only, against `smbclient` on the iMac: `STORAGE_ATTACHED` → SMB3 share opens with the per-session password, a wrong password is refused, `STORAGE_EJECT` → unmount, disk powered off, `STORAGE_DETACHED`. Notes for the Mac side: one message per **partition** (a multi-partition stick gives several volumes), sent right after the iMac's `HELLO`, so possibly **before** `CONFIG_ACK`. `size` is the filesystem size in bytes. The share is at `smb://imac@<iMac thunderbolt0 address>/<share>`, SMB3, port 445, on the cable only. Please confirm or change these in `PROTOCOL.md`.
 
+5. **The iMac's macOS Data volume is offered as a drive** (user's decision, read-only only): one more `STORAGE_ATTACHED` with `"id":"imac-macos"`, `"fs":"apfs"`, `"read_only":true`, label `iMac macOS (Mac - Data)`. `size` is the APFS container size (volumes share it). The Mac app can treat it like any USB drive; `STORAGE_EJECT` on it just answers `STORAGE_DETACHED`, and it comes back next session. `apfs-fuse` is built from source (`linux/apfs-fuse/build.sh`), not a package; it needs `fuse3`, which is already in the image.
+
 **Installer feedback:** the boot picker, partitions and Wi-Fi all worked on the real machine. The default boot entry and "older Radeon GPU" have identical options (both force `amdgpu` for CIK); that is fine on this R9 M380.
 
 ## 2026-11-26, MacBook session

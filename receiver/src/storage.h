@@ -17,6 +17,7 @@ class Storage {
   struct Options {
     std::string iface;        // Samba listens on this interface only
     bool read_only = false;   // mount everything read-only (testing)
+    bool share_macos = true;  // offer the iMac's own macOS Data volume, read-only (apfs-fuse)
   };
   // emit(type, json) sends one STORAGE_* message on ctrl.
   using Emit = std::function<void(uint8_t type, const std::string& json)>;
@@ -33,9 +34,12 @@ class Storage {
  private:
   struct Volume {
     std::string id, devnode, syspath, disk_syspath, label, fs, mountpoint, share;
+    std::string share_path;  // directory shared over SMB; usually the mountpoint
     uint64_t size = 0;
     bool read_only = false;
+    bool internal = false;   // the iMac's own macOS volume: never unmounted on eject, never powered off
   };
+  void mount_macos();
   void consider(udev_device* d);
   void removed(udev_device* d);
   bool mount_volume(Volume& v);
