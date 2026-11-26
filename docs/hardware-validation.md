@@ -11,7 +11,7 @@ Status is one of: pass, partial, fail, not tested.
 | A2 Thunderbolt networking | not tested | |
 | A3 5K panel | not tested | |
 | A4 Video decode | not tested | |
-| A5 Sound | partial | Speakers work (stock driver). Jack and microphone not tested yet. |
+| A5 Sound | partial | Speakers work (stock driver). Microphone gives a live signal. Jack and voice recording assumed working, not tested. |
 
 **Decision:** (go / no-go, date, and what any "partial" means for the user)
 
@@ -72,9 +72,9 @@ Test clips (10 s, 600 frames, 60 fps) were made with libx264 and are under `/roo
 
 - Cards and codec: card 0 `HDA Intel PCH`, codec **Cirrus Logic CS4206** (`/proc/asound/card0/codec#0`, subsystem `106b:8200`), not the CS4208 the build doc expected. Driver fixup: none picked (`picked fixup  for codec SSID 106b:0000`). Pins: 0x0b internal speaker, 0x0a headphone jack, 0x0e mic. Card 1 is the GPU's HDMI audio (unused).
 - Speakers: **work** with the stock driver, no quirk. `amixer -c0 sset Master/Speaker/Headphone 100% unmute`, then `speaker-test -D plughw:0,0 -c2 -t sine -f 440 -l 1`: the user heard it, very loud. Left/right not confirmed separately yet. Comfortable level afterwards: Master 40 % (−38 dB), Speaker 70 %.
-- Headphone jack:
-- Microphone:
-- Settings or quirks needed:
+- Headphone jack: **not tested**. The user decided to assume it works (2026-11-26). Unverified.
+- Microphone: live signal, not checked by ear. `amixer -c0 sset Capture 80% cap`, `arecord -D plughw:0,0 -f S16_LE -r 48000 -c1 -d 2`: 2 s of a quiet room gave RMS −45 dBFS, peak 1052/32768 (not digital silence). Voice playback not checked; the user decided to assume it works. Mic Boost was at 0.
+- Settings or quirks needed: none. Stock `snd_hda_intel`, no `model=` option. Speaker and capture levels only.
 
 ## Other findings
 
