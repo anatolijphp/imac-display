@@ -35,7 +35,7 @@ usage: imd <command> [options]
   pipeline  [--points WxH] [--lodpi] [--capture WxH] [--cols N --rows N] [--mbps M] [--seconds N]
             [--no-low-latency] [--codec hevc] [--speed] [--serial-tiles] [--capture-fps N] [--queue-depth N]
             [--no-scene] [--out PREFIX] [--host NAME [--port P]]
-            [--no-input] [--no-storage] [--no-audio] [--audio] [--pointer-speed X] [--quiet]
+            [--no-input] [--no-storage] [--no-audio] [--audio] [--volume 0..1] [--pointer-speed X] [--quiet]
       Virtual display → test content → screen capture → H.264 encode, with timings.
       --cols/--rows cut the picture into tiles, one encoder each (2x2 for native 5K).
       --out writes PREFIX.tileN.h264. --host also sends the stream to an iMac (PROTOCOL.md);
@@ -270,6 +270,9 @@ func videoConfig(width: Int, height: Int, tiles: [TileRect]) -> [String: Any] {
         }
     } else if session != nil && !imacPlaysSound {
         print("sound: the iMac says it cannot play sound yet (HELLO audio.out is false), so none is sent")
+    }
+    if sendAudio, let v = o.values["volume"].flatMap({ Double($0) }) {   // the iMac's speaker level, 0 to 1
+        try? session?.ctrl.sendJSON(.audioVolume, ["volume": max(0, min(1, v)), "mute": false])
     }
     try await capture.start(displayID: vd.displayID, width: cw, height: ch, fps: o.int("capture-fps", fps), queueDepth: o.int("queue-depth", 3),
                             audio: sendAudio)
