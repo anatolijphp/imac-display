@@ -1,0 +1,5 @@
+# Packages installed on the iMac on top of the installer image (linux/iso/packages.extra).
+# One per line: name  # why. Kept in step with docs/handoff.md "Packages to add to the image".
+libevdev        # receiver: read and grab keyboards and pointers
+nlohmann-json   # receiver: JSON for HELLO/CONFIG (build-time, header only)
+samba           # receiver stage 6: share USB drives with the MacBook over the cable (not enabled yet)
