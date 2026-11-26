@@ -19,8 +19,6 @@
 namespace {
 
 // Colours (macOS dark appearance).
-constexpr double kBgTop[3] = {0x1d / 255.0, 0x1d / 255.0, 0x20 / 255.0};
-constexpr double kBgBottom[3] = {0x0a / 255.0, 0x0a / 255.0, 0x0c / 255.0};
 constexpr double kGrey[3] = {0x98 / 255.0, 0x98 / 255.0, 0x9d / 255.0};
 constexpr double kBlue[3] = {0x0a / 255.0, 0x84 / 255.0, 0xff / 255.0};
 const char* kFont = "Adwaita Sans";
@@ -34,13 +32,41 @@ void rounded_rect(cairo_t* cr, double x, double y, double w, double h, double r)
   cairo_close_path(cr);
 }
 
-void paint_background(cairo_t* cr, int w, int h) {
-  cairo_pattern_t* g = cairo_pattern_create_linear(0, 0, 0, h);
-  cairo_pattern_add_color_stop_rgb(g, 0, kBgTop[0], kBgTop[1], kBgTop[2]);
-  cairo_pattern_add_color_stop_rgb(g, 1, kBgBottom[0], kBgBottom[1], kBgBottom[2]);
-  cairo_set_source(cr, g);
-  cairo_paint(cr);
-  cairo_pattern_destroy(g);
+// Background: a soft radial glow behind the icon fading to near-black, computed per pixel in floating
+// point and dithered (triangular noise of +-1 step) to 8 bits. A plain 8-bit dark gradient has only ~20
+// grey levels over the screen height, which shows as wide bands, more so after the panel's upscaling.
+void paint_background(cairo_surface_t* surf, int w, int h) {
+  cairo_surface_flush(surf);
+  uint8_t* px = cairo_image_surface_get_data(surf);
+  int stride = cairo_image_surface_get_stride(surf);
+  const double cx = w * 0.5, cy = h * 0.40, radius = h * 1.05;
+  // Centre and edge colours in linear 0..255 sRGB units (slightly cool, like macOS dark).
+  const double c0[3] = {44, 45, 50}, c1[3] = {8, 8, 10};
+  uint32_t seed = 0x9e3779b9u;
+  auto rnd = [&seed]() {  // xorshift32 -> [0,1)
+    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+    return (seed >> 8) * (1.0 / 16777216.0);
+  };
+  for (int y = 0; y < h; y++) {
+    uint32_t* row = (uint32_t*)(px + y * stride);
+    double dy = (y - cy) / radius;
+    for (int x = 0; x < w; x++) {
+      double dx = (x - cx) / radius;
+      double t = std::sqrt(dx * dx + dy * dy);
+      t = t > 1 ? 1 : t;
+      t = t * t * (3 - 2 * t);           // smoothstep: soft centre, gentle fall-off
+      double n = rnd() + rnd() - 1.0;    // triangular dither, -1..1 steps, same for r, g, b
+      uint32_t out = 0;
+      for (int c = 0; c < 3; c++) {
+        double v = c0[c] + (c1[c] - c0[c]) * t + n;
+        int iv = int(std::lround(v));
+        iv = iv < 0 ? 0 : iv > 255 ? 255 : iv;
+        out |= uint32_t(iv) << (16 - 8 * c);
+      }
+      row[x] = out;
+    }
+  }
+  cairo_surface_mark_dirty(surf);
 }
 
 void centered_text(cairo_t* cr, const std::string& t, double cx, double y, double size, cairo_font_weight_t wt) {
@@ -65,7 +91,7 @@ void draw_laptop(cairo_t* cr, double cx, double cy, double s, bool connected) {
   double bw = 780 * s, bh = 30 * s, by = sy + sh + 4 * s;
   rounded_rect(cr, cx - bw / 2, by, bw, bh, bh / 2);
   cairo_fill(cr);
-  cairo_set_source_rgb(cr, kBgBottom[0], kBgBottom[1], kBgBottom[2]);
+  cairo_set_source_rgb(cr, 0.16, 0.16, 0.18);  // thumb notch: dark grey, close to the glow behind it
   rounded_rect(cr, cx - 70 * s, by - 1, 140 * s, 11 * s, 5 * s);
   cairo_fill(cr);
 
@@ -210,9 +236,9 @@ void Display::close() {
 }
 
 void Display::render_base(const Status& st) {
+  paint_background(base_, w_, h_);
   cairo_t* cr = cairo_create(base_);
   double s = h_ / 2160.0, cx = w_ / 2.0;
-  paint_background(cr, w_, h_);
 
   double icon_cy = h_ * 0.40;
   draw_laptop(cr, cx, icon_cy, s, st.state == State::Connected);
