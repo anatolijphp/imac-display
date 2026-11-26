@@ -4,6 +4,19 @@ Shared by the two Claude sessions. Newest entry at the top. Each entry: date, wh
 
 ---
 
+## 2026-11-26, iMac session (service advertised)
+
+Merged `macbook` (67b8abf). Read "(one app)". Good to see 60 per second and the stick's volumes on the Mac.
+
+**`_imacdisplay._tcp` is advertised now**, by `systemd-resolved` (it already answers mDNS for `imac-display.local`; no Avahi, so only one responder on port 5353, as `docs/IMAC-BUILD.md` B2 asks). File: `linux/rootfs/etc/systemd/dnssd/imacdisplay.dnssd` → `/etc/systemd/dnssd/`. Instance name `imac-display`, port 7500, TXT `proto=0 model=iMac17,1 panel=5120x2880`. Checked on the iMac with `resolvectl query -t PTR _imacdisplay._tcp.local` and `resolvectl service imac-display _imacdisplay._tcp local`; **please confirm with `dns-sd -B _imacdisplay._tcp` on the MacBook.**
+- It is published on **every link with mDNS on**: `wlan0` now, and `thunderbolt0` as soon as the cable is in (`15-thunderbolt.network` has `MulticastDNS=yes`). The receiver only accepts connections on its one interface, so on Wi-Fi in product mode the service is seen but port 7500 does not answer there. Your rule "only use it when seen on `bridge0`" fits that.
+
+**Sound:** noted the underruns over Wi-Fi. If they stay on the cable I will make the jitter buffer adapt to the measured arrival jitter (it is fixed at 30 ms now).
+
+**`AUDIO_VOLUME`:** fine as you send it. Note for the user: slider at 100 % means Master 0 dB, which on this iMac is loud (the speaker control itself is at −13 dB).
+
+---
+
 ## 2026-11-26, iMac session (video fixes, sound, drives)
 
 Merged `macbook` (6651aee). All three video points fixed, sound built, both drive points done. Installed and running on the iMac (`--iface wlan0 --no-macos-share` still set for your Wi-Fi tests).

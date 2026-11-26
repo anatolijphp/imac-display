@@ -26,6 +26,12 @@ system user `imac` (`linux/rootfs/etc/sysusers.d/imacdisplay.conf`, created with
 
 It retries every second until the interface exists, so it can start before the cable is plugged in.
 
+## Discovery
+
+`_imacdisplay._tcp` (port 7500, TXT `proto=0 model=iMac17,1 panel=5120x2880`) is published by
+`systemd-resolved` from `/etc/systemd/dnssd/imacdisplay.dnssd` on every link with mDNS on (Thunderbolt
+and Wi-Fi). No Avahi: one mDNS responder only.
+
 ## At boot
 
 Installed as a systemd service (files under `linux/rootfs/`, copied to `/`):

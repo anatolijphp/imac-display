@@ -1,0 +1,9 @@
+# DNS-SD for the receiver (PROTOCOL.md, Link and discovery), published by systemd-resolved, which already
+# answers mDNS for imac-display.local. One mDNS responder only (no Avahi): two would fight over port 5353.
+# Published on every link with MulticastDNS=yes: thunderbolt0, and wlan0 for setup and Wi-Fi tests.
+# The receiver itself only accepts connections on its one interface (thunderbolt0 unless testing).
+[Service]
+Name=%H
+Type=_imacdisplay._tcp
+Port=7500
+TxtText=proto=0 model=iMac17,1 panel=5120x2880
