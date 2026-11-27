@@ -6,6 +6,25 @@
 import AppKit
 import CoreMedia
 
+/// How late a message from the iMac arrived, from the time stamp it was sent with. The two clocks are
+/// unrelated, so "on time" is the smallest (arrival − sent) seen in the last 30 to 60 seconds.
+struct Lateness {
+    private var current = Int64.max, previous = Int64.max
+    private var bucketStartUs: UInt64 = 0
+
+    /// Microseconds later than the quickest recent message; 0 for that one.
+    mutating func of(sentUs: UInt64, nowUs: UInt64) -> Int64 {
+        let offset = Int64(bitPattern: nowUs &- sentUs)
+        if nowUs &- bucketStartUs > 30_000_000 {
+            previous = current
+            current = .max
+            bucketStartUs = nowUs
+        }
+        current = min(current, offset)
+        return offset - min(current, previous)
+    }
+}
+
 public final class DisplaySession {
     public struct Config {
         public var host: String
@@ -61,6 +80,10 @@ public final class DisplaySession {
     private var limitWidth = 3840, limitHeight = 2160
     private var screenAudio = false
     private var reconfiguring = false
+    private var remoteKeyRepeat = false
+    private var lateness = Lateness()
+    private var lateInputs = 0
+    private var lateLoggedUs: UInt64 = 0
     private let keyframeWanted = OneShot()
     private let sentCounter = Tally()
     private var audioPending = Data()
@@ -84,7 +107,12 @@ public final class DisplaySession {
         let features = hello["features"] as? [String] ?? []
         let audio = hello["audio"] as? [String: Any] ?? [:]
 
-        if features.contains("input") { injector = InputInjector() }
+        if features.contains("input") {
+            injector = InputInjector()
+            // Key repeat off in macOS's Keyboard settings shows as a very long interval: then nobody repeats.
+            remoteKeyRepeat = features.contains("key-repeat")
+            injector?.remoteRepeat = remoteKeyRepeat
+        }
         if features.contains("storage") {
             mounter = StorageMounter(host: s.host, sendEject: { [weak s] id in try? s?.ctrl.sendJSON(.storageEject, ["id": id]) },
                                      log: { [weak self] in self?.log("drives: \($0)") })
@@ -248,12 +276,18 @@ public final class DisplaySession {
         guard let s = session else { throw CaptureError("no session") }
         let tiles = tiles ?? TileRect.grid(width: w, height: h, cols: 1, rows: 1)
         setAck(nil)
-        try s.sendConfig([
+        var message: [String: Any] = [
             "video": ["codec": "h264", "fps": config.fps, "w": w, "h": h, "scale": "fit",
                       "tiles": tiles.map { ["id": $0.id, "x": $0.x, "y": $0.y, "w": $0.w, "h": $0.h] }] as [String: Any],
             "audio_out": ["rate": 48000, "ch": 2, "fmt": "s16le"],
             "audio_in": ["enabled": false, "rate": 48000, "ch": 1, "fmt": "s16le"],
-        ])
+        ]
+        // The iMac repeats held keys with this Mac's own settings (System Settings > Keyboard).
+        let interval = max(NSEvent.keyRepeatInterval, 0.015)
+        if remoteKeyRepeat, interval < 2 {
+            message["key_repeat"] = ["delay_ms": Int(NSEvent.keyRepeatDelay * 1000), "interval_ms": Int(interval * 1000)]
+        }
+        try s.sendConfig(message)
         var answer: (ok: Bool, error: String)?
         for _ in 0..<150 {   // 3 s
             answer = currentAck
@@ -346,8 +380,20 @@ public final class DisplaySession {
 
     private func received(_ h: FrameHeader, _ p: Data) {
         guard let type = MsgType(rawValue: h.type) else { return }
+        // Every message carries the iMac's clock at sending; how much later than usual it arrived is
+        // the network's doing. A key or click that is late is logged (not which key), to tell network
+        // delays from keyboard faults.
+        let nowUs = Wire.nowUs()
+        let lateUs = lateness.of(sentUs: h.ptsUs, nowUs: nowUs)
         switch type {
         case .inputKey, .inputPointerRel, .inputButton:
+            if type != .inputPointerRel, lateUs > 150_000 {
+                lateInputs += 1
+                if nowUs - lateLoggedUs > 2_000_000 {
+                    lateLoggedUs = nowUs
+                    log("input: a key or click arrived \(lateUs / 1000) ms late (network delay); \(lateInputs) so far in this session")
+                }
+            }
             injector?.handle(type: type, payload: p)
         case .storageAttached, .storageDetached:
             guard let j = (try? JSONSerialization.jsonObject(with: p)) as? [String: Any] else { return }

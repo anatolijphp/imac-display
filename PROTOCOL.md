@@ -60,7 +60,7 @@ The `video` connection sends the same `session` with `"channel":"video"`.
  "panel":{"w":5120,"h":2880,"hz":60},
  "decode":{"codecs":["h264"],"max_w":3840,"max_h":2160,"max_tiles":4,"hw":false},
  "audio":{"out":true,"in":true},
- "features":["input","storage","brightness"]}
+ "features":["input","storage","key-repeat","brightness"]}
 ```
 `decode` states what the iMac measured it can decode at 60 fps. The MacBook never asks for more. `max_w`×`max_h` is the largest single stream (one tile); `hw` says whether the GPU decodes (on this iMac it does not, see `docs/hardware-validation.md`). `features` and `audio` list only what the receiver has implemented; the MacBook does not use anything that is missing.
 
@@ -70,8 +70,10 @@ The `video` connection sends the same `session` with `"channel":"video"`.
           "tiles":[{"id":0,"x":0,"y":0,"w":3840,"h":2160}],
           "scale":"fit"},
  "audio_out":{"rate":48000,"ch":2,"fmt":"s16le"},
- "audio_in":{"enabled":true,"rate":48000,"ch":1,"fmt":"s16le"}}
+ "audio_in":{"enabled":true,"rate":48000,"ch":1,"fmt":"s16le"},
+ "key_repeat":{"delay_ms":500,"interval_ms":83}}
 ```
+`key_repeat` is sent only when the iMac's `features` has `"key-repeat"`; it carries the MacBook's own keyboard settings. Without it the iMac sends no repeats.
 `w`×`h` is the full picture; each tile is a rectangle inside it, encoded as an independent stream. The iMac scales the full picture to the panel (`fit` keeps aspect ratio). Native 5K is the same message with `w`=5120, `h`=2880 and four 2560×1440 tiles. A new `CONFIG` may be sent at any time; the next video frame is then a keyframe.
 
 A protocol mismatch is answered with `BYE` and a closed connection.
@@ -108,11 +110,14 @@ Audio is uncompressed. The receiver keeps a jitter buffer of 20 to 40 ms.
 
 | Type | Name | Payload (bytes) |
 |---|---|---|
-| 0x30 | `INPUT_KEY` | `u16 usage_page`, `u16 usage`, `u8 down` (1 or 0), 3 pad. USB HID usages: page 0x07 keyboard, 0x0C consumer (media keys) |
+| 0x30 | `INPUT_KEY` | `u16 usage_page`, `u16 usage`, `u8 down` (1 pressed, 0 released, 2 repeat), 3 pad. USB HID usages: page 0x07 keyboard, 0x0C consumer (media keys) |
 | 0x31 | `INPUT_POINTER_REL` | `i32 dx`, `i32 dy` (raw device counts, no acceleration), `i32 wheel_v`, `i32 wheel_h` (120 per notch) |
 | 0x32 | `INPUT_BUTTON` | `u8 button` (1 left, 2 right, 3 middle, 4, 5), `u8 down`, 2 pad |
 
-The MacBook applies its own pointer acceleration and key repeat. Key autorepeat is not sent.
+The MacBook applies its own pointer acceleration.
+
+- **Key repeat is made by the iMac** when `CONFIG` has `key_repeat`: while a key is held, `INPUT_KEY` with `down` = 2 follows after `delay_ms` and then every `interval_ms`. Only the key pressed last repeats; modifiers and Caps Lock do not repeat and do not stop a repeat. The MacBook posts each as a repeated key press and runs no repeat timer of its own. Reason: a repeat timer on the MacBook starts typing when a release arrives late (a lost packet costs 200 ms or more, and the MacBook cannot tell a late release from a held key); repeats made where the key is can only exist while it really is down. A MacBook talking to an iMac without the `key-repeat` feature repeats keys itself, as before. The keyboard's own autorepeat is never forwarded.
+- **A device that goes away with keys or buttons held** (unplugged, switched off, out of range): the iMac sends their releases.
 
 - Wheel: positive `wheel_v` = wheel turned away from the user (content scrolls up), positive `wheel_h` = right. 120 per notch; high-resolution wheels send smaller steps in the same units.
 - Modifier keys are ordinary page 0x07 usages (0xE0–0xE7). A PC keyboard's Windows key is 0xE3/0xE7 (GUI), which the MacBook treats as Command.

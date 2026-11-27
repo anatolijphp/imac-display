@@ -34,3 +34,9 @@ add_executable(imacdisplayd
 target_link_libraries(imacdisplayd PRIVATE PkgConfig::EVDEV PkgConfig::UDEV PkgConfig::SYSTEMD PkgConfig::DRM PkgConfig::CAIRO PkgConfig::GL PkgConfig::AV PkgConfig::ALSA Threads::Threads nlohmann_json::nlohmann_json)
 
 install(TARGETS imacdisplayd RUNTIME DESTINATION bin)
+
+# Key repeat and key release, tested with a virtual keyboard (needs /dev/uinput, so root on the iMac):
+#   make input_test && ./input_test
+add_executable(input_test EXCLUDE_FROM_ALL test/input_test.cpp src/input.cpp src/hidmap.cpp src/net.cpp)
+target_include_directories(input_test PRIVATE src)
+target_link_libraries(input_test PRIVATE PkgConfig::EVDEV Threads::Threads)

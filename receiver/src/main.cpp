@@ -48,7 +48,7 @@ json imac_hello() {
           {"panel", {{"w", 5120}, {"h", 2880}, {"hz", 60}}},
           {"decode", {{"codecs", {"h264"}}, {"max_w", 3840}, {"max_h", 2160}, {"max_tiles", 4}, {"hw", false}}},
           {"audio", {{"out", true}, {"in", true}}},
-          {"features", {"input", "storage"}}};
+          {"features", {"input", "storage", "key-repeat"}}};
 }
 
 // The link chosen on the waiting screen (Thunderbolt or Wi-Fi), kept across restarts.
@@ -378,6 +378,9 @@ class Daemon {
                            c.value("audio_in", json()) != config_.value("audio_in", json());
       config_ = c;
       config_us_ = now_us();
+      // The MacBook's key repeat settings; without them (an older app) it repeats keys itself.
+      const json kr = c.value("key_repeat", json::object());
+      input_.set_repeat(kr.value("delay_ms", 0), kr.value("interval_ms", 0));
       fprintf(stderr, "session: CONFIG accepted: %s\n", c["video"].dump().c_str());
       ctrl_->send_json(proto::CONFIG_ACK, R"({"ok":true})");
       // Video (decoders, GPU setup) starts here, so it is ready when the first picture arrives; it takes

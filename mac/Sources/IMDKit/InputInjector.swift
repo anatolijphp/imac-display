@@ -10,6 +10,9 @@ public final class InputInjector {
     /// Lines scrolled per wheel notch.
     public var linesPerNotch = 3.0
     public private(set) var keys = 0, moves = 0, clicks = 0
+    /// The iMac sends key repeats itself (its "key-repeat" feature): then no repeat timer runs here, and
+    /// a release that arrives late (a network stall) cannot make this Mac type extra letters.
+    public var remoteRepeat = false
 
     private let queue = DispatchQueue(label: "imd.input", qos: .userInteractive)
     private let source = CGEventSource(stateID: .hidSystemState)
@@ -34,7 +37,8 @@ public final class InputInjector {
         queue.async { [self] in
             switch type {
             case .inputKey where b.count >= 5:
-                key(page: UInt16(b[0]) | UInt16(b[1]) << 8, usage: UInt16(b[2]) | UInt16(b[3]) << 8, down: b[4] != 0)
+                let page = UInt16(b[0]) | UInt16(b[1]) << 8, usage = UInt16(b[2]) | UInt16(b[3]) << 8
+                if b[4] == 2 { repeated(page: page, usage: usage) } else { key(page: page, usage: usage, down: b[4] != 0) }
             case .inputPointerRel where b.count >= 16:
                 func i32(_ o: Int) -> Int { Int(Int32(bitPattern: UInt32(b[o]) | UInt32(b[o + 1]) << 8 | UInt32(b[o + 2]) << 16 | UInt32(b[o + 3]) << 24)) }
                 pointer(dx: i32(0), dy: i32(4), wheelV: i32(8), wheelH: i32(12))
@@ -79,7 +83,14 @@ public final class InputInjector {
         }
         if down { keysDown.insert(code) } else { keysDown.remove(code) }
         postKey(code, down: down, flagsAfter: modifiers)
+        if remoteRepeat { return }
         if down { startRepeat(code) } else if repeatingKey == code { stopRepeat() }
+    }
+
+    /// A repeat made by the iMac while the key is held there. Ignored for a key this Mac does not hold.
+    private func repeated(page: UInt16, usage: UInt16) {
+        guard remoteRepeat, page == 0x07, let code = Self.keyCodes[usage], keysDown.contains(code) else { return }
+        postKey(code, down: true, flagsAfter: modifiers, autorepeat: true)
     }
 
     private func postKey(_ code: CGKeyCode, down: Bool, flagsAfter: CGEventFlags, autorepeat: Bool = false) {

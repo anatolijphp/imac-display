@@ -90,7 +90,17 @@ mouse moves and goes away after 10 s without movement):
 - Devices are grabbed only while a MacBook session is active. Without a session they drive the waiting
   screen (above); when the session ends or the receiver exits, they are released.
 - Keys go out as USB HID usages: page 0x07 for keyboard keys, page 0x0C for volume, mute, media
-  and brightness keys. Key repeat is not forwarded (the MacBook repeats).
+  and brightness keys.
+- Key repeat is made here, with the MacBook's settings from `CONFIG.key_repeat`: `INPUT_KEY` with
+  `down` = 2 while a key is held. The MacBook used to run the repeat timer; a release that arrived
+  late (a lost packet costs 200 ms or more) then typed extra letters. The keyboard's own autorepeat
+  is not forwarded.
+- A device that goes away with keys held gets them released on the MacBook. (The kernel sends those
+  releases itself when a device is removed, but the reader can lose the race against the device's end.)
+- Log lines for finding out why a key seemed stuck, none of which name the key: `events waited N ms
+  for the main loop` (delay before sending), `reported a key held for N s` (what the keyboard itself
+  said, at most one line per 30 s), `went away with N key(s) held`. The MacBook app logs
+  `a key or click arrived N ms late` (delay on the network).
 - Pointer: relative counts, coalesced per evdev report. Wheel: 120 per notch (high-resolution wheels
   pass their own units), positive `wheel_v` = scroll away from the user (up), positive `wheel_h` = right.
   The Windows/Super key is HID 0xE3/0xE7 (GUI), which macOS treats as Command.
@@ -176,6 +186,7 @@ mouse moves and goes away after 10 s without movement):
     imacdisplayd --iface lo --port 7501 &
     test/fake_mac.py ::1 --port 7501 --seconds 10     # prints what the MacBook would receive
     test/uinput_inject.py                             # in another shell: virtual keyboard+mouse
+    make -C BUILD input_test && BUILD/input_test      # key repeat and release; safe beside a live session
     test/fake_mac.py ::1 --port 7501 --eject-after 10 # also ejects each announced drive after 10 s
     test/send_video.py ::1 --port 7501 --size 3840x2160 --tiles 4 [--partial] [--clip FILE]
     test/send_audio.py ::1 --port 7501 [--tone 440 --level -30]   # silence unless --tone
