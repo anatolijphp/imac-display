@@ -13,10 +13,16 @@ public final class InputInjector {
     /// The iMac sends key repeats itself (its "key-repeat" feature): then no repeat timer runs here, and
     /// a release that arrives late (a network stall) cannot make this Mac type extra letters.
     public var remoteRepeat = false
+    /// For the app's log: only trouble with modifier keys, never which letter was typed.
+    public var log: (String) -> Void = { _ in }
 
     private let queue = DispatchQueue(label: "imd.input", qos: .userInteractive)
     private let source = CGEventSource(stateID: .hidSystemState)
-    private var modifiers: CGEventFlags = []
+    private var modifiers: CGEventFlags = []          // from heldModifiers
+    private var heldModifiers: Set<UInt16> = []       // HID usages 0xE0–0xE7 held on the iMac (left and right apart)
+    private var watch: DispatchSourceTimer?
+    private var strayFor: [UInt64: Int] = [:]         // flag → seconds the Mac has shown it down without a key on the iMac
+    private var everPressed: Set<UInt64> = []         // flags pressed from the iMac in this session
     private var capsLock = false
     private var buttonsDown: Set<Int> = []
     private var keysDown: Set<CGKeyCode> = []
@@ -49,6 +55,18 @@ public final class InputInjector {
         }
     }
 
+    /// What is held, as the iMac's keyboards say and as this Mac shows it. For the log; names modifier
+    /// keys only, other keys are counted.
+    public func stateSummary() -> String {
+        queue.sync { [self] in
+            let all: [CGEventFlags] = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
+            func names(_ f: CGEventFlags) -> String { let n = all.filter { f.contains($0) }.map { Self.name($0) }; return n.isEmpty ? "no modifier" : n.joined(separator: "+") }
+            let system = CGEventSource.flagsState(.hidSystemState)
+            let buttons = [CGMouseButton.left, .right, .center].filter { CGEventSource.buttonState(.hidSystemState, button: $0) }.count
+            return "held on the iMac: \(names(modifiers)), \(keysDown.count) other key(s), \(buttonsDown.count) button(s); this Mac shows: \(names(system)), \(buttons) button(s)"
+        }
+    }
+
     /// Lets go of everything that is still held (end of session).
     public func releaseAll() {
         queue.sync { [self] in
@@ -59,6 +77,9 @@ public final class InputInjector {
                 if let code = Self.keyCodes[usage] { postKey(code, down: false, flagsAfter: modifiers.subtracting(flag)) }
                 modifiers.remove(flag)
             }
+            heldModifiers = []
+            watch?.cancel()
+            watch = nil
             for bn in buttonsDown { postButton(bn, down: false) }
             buttonsDown = []
         }
@@ -71,9 +92,12 @@ public final class InputInjector {
         if page == 0x0C { mediaKey(usage, down: down); return }
         guard page == 0x07, let code = Self.keyCodes[usage] else { return }
         if let flag = Self.modifierFlags[usage] {
-            if down { modifiers.insert(flag) } else { modifiers.remove(flag) }
-            // Left and right keys share a flag; keep it while the other one is held. Good enough for now:
+            // Left and right keys share a flag: it stays while the other one is held.
+            if down { heldModifiers.insert(usage); everPressed.insert(flag.rawValue) } else { heldModifiers.remove(usage) }
+            modifiers = Self.flags(of: heldModifiers)
             postKey(code, down: down, flagsAfter: modifiers)
+            if !down, !modifiers.contains(flag) { verifyReleased(flag, code: code, attempt: 1) }
+            startWatch()
             return
         }
         if usage == 0x39 {   // Caps Lock toggles on key down
@@ -93,8 +117,70 @@ public final class InputInjector {
         postKey(code, down: true, flagsAfter: modifiers, autorepeat: true)
     }
 
+    private static func flags(of usages: Set<UInt16>) -> CGEventFlags {
+        usages.reduce(into: CGEventFlags()) { if let f = modifierFlags[$1] { $0.insert(f) } }
+    }
+
+    static func name(_ flag: CGEventFlags) -> String {
+        switch flag {
+        case .maskCommand: return "Command"
+        case .maskShift: return "Shift"
+        case .maskControl: return "Control"
+        case .maskAlternate: return "Option"
+        default: return "a modifier"
+        }
+    }
+
+    /// A released modifier that the Mac still shows as down would turn every following key into a
+    /// shortcut. Check shortly after posting the release, and post it again if it did not take.
+    private func verifyReleased(_ flag: CGEventFlags, code: CGKeyCode, attempt: Int) {
+        queue.asyncAfter(deadline: .now() + 0.25) { [self] in
+            guard !modifiers.contains(flag), CGEventSource.flagsState(.hidSystemState).contains(flag) else { return }
+            log("\(Self.name(flag)) was released on the iMac but this Mac still shows it down 0.25 s later; releasing it again (try \(attempt))")
+            postKey(code, down: false, flagsAfter: modifiers)
+            if attempt < 3 { verifyReleased(flag, code: code, attempt: attempt + 1) }
+        }
+    }
+
+    /// Once a second: a modifier that this Mac shows as down while no key on the iMac holds it. That is
+    /// either a key held on the MacBook's own keyboard or a stuck one; it is logged once, after 3 s.
+    private func startWatch() {
+        guard watch == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            let system = CGEventSource.flagsState(.hidSystemState)
+            for flag in [CGEventFlags.maskCommand, .maskShift, .maskControl, .maskAlternate] {
+                if system.contains(flag) && !self.modifiers.contains(flag) {
+                    self.strayFor[flag.rawValue, default: 0] += 1
+                    if self.strayFor[flag.rawValue] == 3 {
+                        // Only one this session pressed itself: a key held on the MacBook's own keyboard is left alone.
+                        let ours = self.everPressed.contains(flag.rawValue)
+                        self.log("this Mac has shown \(Self.name(flag)) down for 3 s while no key on the iMac holds it" + (ours ? "; releasing it" : " (not pressed from the iMac in this session: left alone)"))
+                        guard ours else { continue }
+                        for (usage, f) in Self.modifierFlags where f == flag {
+                            if let code = Self.keyCodes[usage] { self.postKey(code, down: false, flagsAfter: self.modifiers) }
+                        }
+                        self.queue.asyncAfter(deadline: .now() + 0.25) {
+                            let still = CGEventSource.flagsState(.hidSystemState).contains(flag)
+                            self.log(still ? "\(Self.name(flag)) is still down after that release" : "\(Self.name(flag)) is released now")
+                        }
+                    }
+                } else if let n = self.strayFor.removeValue(forKey: flag.rawValue), n >= 3 {
+                    self.log("\(Self.name(flag)) is no longer down on this Mac (after \(n) s)")
+                }
+            }
+        }
+        t.resume()
+        watch = t
+    }
+
     private func postKey(_ code: CGKeyCode, down: Bool, flagsAfter: CGEventFlags, autorepeat: Bool = false) {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else {
+            log("could not create a key event (\(down ? "press" : "release"))")
+            return
+        }
         var flags = e.flags.subtracting([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskAlphaShift]).union(flagsAfter)
         if capsLock { flags.insert(.maskAlphaShift) }
         e.flags = flags

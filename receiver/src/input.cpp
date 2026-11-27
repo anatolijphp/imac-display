@@ -274,6 +274,13 @@ void Input::handle(Dev& d, uint16_t type, uint16_t code, int32_t value) {
     if (button) flush_pointer(d);  // movement before the click is sent before the click
     const uint64_t now = now_us();
     send_key(code, value ? 1 : 0);
+    // Trace of modifier keys (never of other keys): what each keyboard itself reported, to tell a
+    // keyboard that keeps a modifier down from one that got stuck on the MacBook.
+    if (!button && is_modifier(page, usage)) {
+      static const char* names[] = {"left Control", "left Shift", "left Alt/Option", "left Windows/Command",
+                                    "right Control", "right Shift", "right Alt/Option", "right Windows/Command"};
+      fprintf(stderr, "input: \"%s\" %s %s\n", d.name.c_str(), names[usage - 0xE0], value ? "down" : "up");
+    }
     if (value) {
       d.down[code] = now;
       // Letters, digits, arrows and so on repeat; modifiers and Caps Lock do not, and do not stop a repeat.

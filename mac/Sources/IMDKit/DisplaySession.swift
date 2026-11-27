@@ -112,6 +112,7 @@ public final class DisplaySession {
             // Key repeat off in macOS's Keyboard settings shows as a very long interval: then nobody repeats.
             remoteKeyRepeat = features.contains("key-repeat")
             injector?.remoteRepeat = remoteKeyRepeat
+            injector?.log = { [weak self] in self?.log("input: \($0)") }
         }
         if features.contains("storage") {
             mounter = StorageMounter(host: s.host, sendEject: { [weak s] id in try? s?.ctrl.sendJSON(.storageEject, ["id": id]) },
@@ -305,7 +306,9 @@ public final class DisplaySession {
         if let pt = vd.currentPointSize { desktopWidth = pt.width; desktopHeight = pt.height }
         guard w != streamWidth || h != streamHeight else { return }
         reconfiguring = true
-        log("resolution changed in Display settings")
+        // The state of keys and buttons at this moment: switching the resolution is what the user does
+        // when a key seems stuck, so this line records what was stuck.
+        log("resolution changed in Display settings (\(injector?.stateSummary() ?? "no input"))")
         await stopStream()
         try? await Task.sleep(nanoseconds: 150_000_000)   // let the last pictures of the old size arrive first
         await startStreamOrGiveUp()
