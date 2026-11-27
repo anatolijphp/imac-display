@@ -71,13 +71,13 @@ public final class InputInjector {
     public func releaseAll() {
         queue.sync { [self] in
             stopRepeat()
-            for code in keysDown { postKey(code, down: false, flagsAfter: modifiers) }
+            for code in keysDown { postKey(code, down: false) }
             keysDown = []
-            for (usage, flag) in Self.modifierFlags where modifiers.contains(flag) {
-                if let code = Self.keyCodes[usage] { postKey(code, down: false, flagsAfter: modifiers.subtracting(flag)) }
-                modifiers.remove(flag)
+            for usage in heldModifiers.sorted() {
+                heldModifiers.remove(usage)
+                modifiers = Self.flags(of: heldModifiers)
+                if let code = Self.keyCodes[usage] { postKey(code, down: false) }
             }
-            heldModifiers = []
             watch?.cancel()
             watch = nil
             for bn in buttonsDown { postButton(bn, down: false) }
@@ -95,18 +95,18 @@ public final class InputInjector {
             // Left and right keys share a flag: it stays while the other one is held.
             if down { heldModifiers.insert(usage); everPressed.insert(flag.rawValue) } else { heldModifiers.remove(usage) }
             modifiers = Self.flags(of: heldModifiers)
-            postKey(code, down: down, flagsAfter: modifiers)
+            postKey(code, down: down)
             if !down, !modifiers.contains(flag) { verifyReleased(flag, code: code, attempt: 1) }
             startWatch()
             return
         }
         if usage == 0x39 {   // Caps Lock toggles on key down
             if down { capsLock.toggle() }
-            postKey(code, down: down, flagsAfter: modifiers)
+            postKey(code, down: down)
             return
         }
         if down { keysDown.insert(code) } else { keysDown.remove(code) }
-        postKey(code, down: down, flagsAfter: modifiers)
+        postKey(code, down: down)
         if remoteRepeat { return }
         if down { startRepeat(code) } else if repeatingKey == code { stopRepeat() }
     }
@@ -114,7 +114,7 @@ public final class InputInjector {
     /// A repeat made by the iMac while the key is held there. Ignored for a key this Mac does not hold.
     private func repeated(page: UInt16, usage: UInt16) {
         guard remoteRepeat, page == 0x07, let code = Self.keyCodes[usage], keysDown.contains(code) else { return }
-        postKey(code, down: true, flagsAfter: modifiers, autorepeat: true)
+        postKey(code, down: true, autorepeat: true)
     }
 
     private static func flags(of usages: Set<UInt16>) -> CGEventFlags {
@@ -137,7 +137,7 @@ public final class InputInjector {
         queue.asyncAfter(deadline: .now() + 0.25) { [self] in
             guard !modifiers.contains(flag), CGEventSource.flagsState(.hidSystemState).contains(flag) else { return }
             log("\(Self.name(flag)) was released on the iMac but this Mac still shows it down 0.25 s later; releasing it again (try \(attempt))")
-            postKey(code, down: false, flagsAfter: modifiers)
+            postKey(code, down: false)
             if attempt < 3 { verifyReleased(flag, code: code, attempt: attempt + 1) }
         }
     }
@@ -160,7 +160,7 @@ public final class InputInjector {
                         self.log("this Mac has shown \(Self.name(flag)) down for 3 s while no key on the iMac holds it" + (ours ? "; releasing it" : " (not pressed from the iMac in this session: left alone)"))
                         guard ours else { continue }
                         for (usage, f) in Self.modifierFlags where f == flag {
-                            if let code = Self.keyCodes[usage] { self.postKey(code, down: false, flagsAfter: self.modifiers) }
+                            if let code = Self.keyCodes[usage] { self.postKey(code, down: false) }
                         }
                         self.queue.asyncAfter(deadline: .now() + 0.25) {
                             let still = CGEventSource.flagsState(.hidSystemState).contains(flag)
@@ -176,14 +176,48 @@ public final class InputInjector {
         watch = t
     }
 
-    private func postKey(_ code: CGKeyCode, down: Bool, flagsAfter: CGEventFlags, autorepeat: Bool = false) {
+    /// HID usage of a modifier key → its side bit in an event's flags (left and right apart), as real keyboards set it.
+    private static let sideBits: [UInt16: UInt64] = [
+        0xE0: 0x0001, 0xE1: 0x0002, 0xE2: 0x0020, 0xE3: 0x0008,     // left Control, Shift, Option, Command
+        0xE4: 0x2000, 0xE5: 0x0004, 0xE6: 0x0040, 0xE7: 0x0010,     // right
+    ]
+    /// Never posted through, so its state stays empty: an event built from it carries only the flags
+    /// that belong to the key itself (arrows, function keys, keypad).
+    private let pristine = CGEventSource(stateID: .privateState)
+    private var ownFlags: [CGKeyCode: UInt64] = [:]
+
+    /// The modifier part of every event this class posts, built from what is held on the iMac and from
+    /// nothing else.
+    ///
+    /// It must not start from the flags an event is created with. Those come from the system's current
+    /// state, and the system in turn adopts the flags of the last event posted. An event created in the
+    /// instant after a modifier's release (before the system has processed that release) therefore
+    /// still carried the modifier and put it back, where it stayed: a stuck Command, Shift, Option or
+    /// Control. Measured with Shift and a pointer event: stuck 33 times out of 40. Arrow and function
+    /// keys left their own bits behind the same way, and every later letter was sent with them.
+    private func heldFlags() -> UInt64 {
+        var f: UInt64 = 0x2000_0100 | modifiers.rawValue          // the two bits every event has
+        for usage in heldModifiers { f |= Self.sideBits[usage] ?? 0 }
+        if capsLock { f |= CGEventFlags.maskAlphaShift.rawValue }
+        return f
+    }
+
+    private func flags(forKey code: CGKeyCode) -> CGEventFlags {
+        let own: UInt64
+        if let known = ownFlags[code] { own = known } else {
+            let all = CGEvent(keyboardEventSource: pristine, virtualKey: code, keyDown: true)?.flags.rawValue ?? 0
+            own = all & (CGEventFlags.maskNumericPad.rawValue | CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskHelp.rawValue)
+            ownFlags[code] = own
+        }
+        return CGEventFlags(rawValue: heldFlags() | own)
+    }
+
+    private func postKey(_ code: CGKeyCode, down: Bool, autorepeat: Bool = false) {
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else {
             log("could not create a key event (\(down ? "press" : "release"))")
             return
         }
-        var flags = e.flags.subtracting([.maskShift, .maskControl, .maskAlternate, .maskCommand, .maskAlphaShift]).union(flagsAfter)
-        if capsLock { flags.insert(.maskAlphaShift) }
-        e.flags = flags
+        e.flags = flags(forKey: code)
         if autorepeat { e.setIntegerValueField(.keyboardEventAutorepeat, value: 1) }
         e.post(tap: .cghidEventTap)
     }
@@ -195,7 +229,7 @@ public final class InputInjector {
         t.schedule(deadline: .now() + NSEvent.keyRepeatDelay, repeating: max(NSEvent.keyRepeatInterval, 0.015))
         t.setEventHandler { [weak self] in
             guard let self, self.repeatingKey == code else { return }
-            self.postKey(code, down: true, flagsAfter: self.modifiers, autorepeat: true)
+            self.postKey(code, down: true, autorepeat: true)
         }
         t.resume()
         repeatTimer = t
@@ -235,7 +269,7 @@ public final class InputInjector {
             if let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: target, mouseButton: btn) {
                 e.setIntegerValueField(.mouseEventDeltaX, value: Int64((Double(dx) * gain).rounded()))
                 e.setIntegerValueField(.mouseEventDeltaY, value: Int64((Double(dy) * gain).rounded()))
-                e.flags = e.flags.union(modifiers)
+                e.flags = CGEventFlags(rawValue: heldFlags())   // never from the event's own flags: see heldFlags()
                 e.post(tap: .cghidEventTap)
             }
         }
@@ -247,7 +281,7 @@ public final class InputInjector {
             let v = Int32(wheelRemainder.v.rounded(.towardZero)), h = Int32(wheelRemainder.h.rounded(.towardZero))
             wheelRemainder.v -= Double(v); wheelRemainder.h -= Double(h)
             if v != 0 || h != 0, let e = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2, wheel1: v, wheel2: h, wheel3: 0) {
-                e.flags = e.flags.union(modifiers)
+                e.flags = CGEventFlags(rawValue: heldFlags())   // never from the event's own flags: see heldFlags()
                 e.post(tap: .cghidEventTap)
             }
         }
@@ -287,7 +321,7 @@ public final class InputInjector {
         guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: at, mouseButton: btn) else { return }
         if n > 3 { e.setIntegerValueField(.mouseEventButtonNumber, value: Int64(n - 1)) }   // 4, 5 → back, forward
         e.setIntegerValueField(.mouseEventClickState, value: lastClick.button == n ? lastClick.count : 1)
-        e.flags = e.flags.union(modifiers)
+        e.flags = CGEventFlags(rawValue: heldFlags())   // never from the event's own flags: see heldFlags()
         e.post(tap: .cghidEventTap)
     }
 
